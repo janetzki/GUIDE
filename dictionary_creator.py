@@ -16,19 +16,21 @@ class DictionaryCreator(object):
         # self.vectorizer = TfidfVectorizer(max_df=0.05, min_df=5) # without alignment
         self.vectorizer = TfidfVectorizer(max_df=0.5, min_df=2)  # with alignment
 
+        # Saved data
+        self.source_tokens_set = None
         self.source_qids_by_word = None
         self.source_question_by_qid = None
-
         self.gt_target_words_by_qid = None
         self.aligned_target_words_by_qid = None
         self.target_qids_by_word = None
-
         self.top_tfidfs_by_qid = None
 
     def _save_state(self):
         with open(os.path.join(self.data_path, 'dc_state.pkl'), 'wb') as pklfile:
-            pickle.dump((self.gt_target_words_by_qid,
+            pickle.dump((self.source_tokens_set,
                          self.source_qids_by_word,
+                         self.source_question_by_qid,
+                         self.gt_target_words_by_qid,
                          self.aligned_target_words_by_qid,
                          self.target_qids_by_word,
                          self.top_tfidfs_by_qid),
@@ -36,7 +38,9 @@ class DictionaryCreator(object):
 
     def _load_state(self):
         with open(os.path.join(self.data_path, 'dc_state.pkl'), 'rb') as pklfile:
-            (self.source_qids_by_word,
+            (self.source_tokens_set,
+             self.source_qids_by_word,
+             self.source_question_by_qid,
              self.gt_target_words_by_qid,
              self.aligned_target_words_by_qid,
              self.target_qids_by_word,
@@ -44,10 +48,10 @@ class DictionaryCreator(object):
 
     def dc_preprocessing(self, save=False):
         source_bible = 'eng-eng-kjv.txt'
-        target_bible = 'fra-fra_fob.txt'  # 'fra-fraLSG.txt' 'deu-deuelo.txt'
+        target_bible = 'fra-fra_fob.txt'  # 'fra-fra_fob.txt' 'fra-fraLSG.txt' 'deu-deuelo.txt' 'spa-spaRV1909.txt'
 
         def load_data():
-            # load semdoms
+            # load sds
             df_source = pd.read_csv(
                 f'{self.base_path}/../semdom extractor/output/semdom_qa_clean_{self.source_language}.csv')
             df_target = pd.read_csv(
@@ -68,7 +72,7 @@ class DictionaryCreator(object):
         df_source, df_target, source_verses, target_verses = load_data()
 
         # optional: increase performance by querying words from words_eng
-        def build_semdoms(df):
+        def build_sds(df):
             qid_by_word = defaultdict(set)
             words_by_qid = dict()
             question_by_qid = dict()
@@ -87,8 +91,8 @@ class DictionaryCreator(object):
 
             return qid_by_word, words_by_qid, question_by_qid
 
-        self.source_qids_by_word, _, self.source_question_by_qid = build_semdoms(df_source)
-        self.target_qids_by_word, self.gt_target_words_by_qid, _ = build_semdoms(df_target)
+        self.source_qids_by_word, _, self.source_question_by_qid = build_sds(df_source)
+        self.target_qids_by_word, self.gt_target_words_by_qid, _ = build_sds(df_target)
 
         def tokenize_all_verses():
             # optional: Use tokenizer from huggingface
@@ -99,6 +103,7 @@ class DictionaryCreator(object):
             return source_tokens_by_verse, target_tokens_by_verse
 
         source_tokens_by_verse, target_tokens_by_verse = tokenize_all_verses()
+        self.source_tokens_set = set([token for source_tokens in source_tokens_by_verse for token in source_tokens])
 
         def combine_alignments():
             # combine source and target verses into a single file for word aligner
@@ -120,7 +125,7 @@ class DictionaryCreator(object):
 
         """ maps words in target language to semantic domains """
 
-        def map_target_words_to_semdoms():
+        def map_target_words_to_sds():
             target_words_by_qid = defaultdict(str)
             matched_qids = set()
 
@@ -155,12 +160,12 @@ class DictionaryCreator(object):
                         matched_qids = {*matched_qids, *new_qids}
             return target_words_by_qid
 
-        self.aligned_target_words_by_qid = map_target_words_to_semdoms()
+        self.aligned_target_words_by_qid = map_target_words_to_sds()
 
         def show_mapped_words():
-            idx = 1  # idx <= 4505 # 7938 questions, 1915 semdoms (for eng-deu)
-            semdom_name = list(self.aligned_target_words_by_qid.keys())[idx]
-            print(semdom_name)
+            idx = 1  # idx <= 4505 # 7938 questions, 1915 sds (for eng-deu)
+            sd_name = list(self.aligned_target_words_by_qid.keys())[idx]
+            print(sd_name)
             print(list((self.aligned_target_words_by_qid.values()))[idx])
 
         show_mapped_words()
@@ -199,29 +204,6 @@ class DictionaryCreator(object):
             self._save_state()
 
     def dc_evaluate(self, load=False):
-        """ H2 EVALUATE
-        de Melo: Ok, nun wäre es auch gut ein **"Experimental Setup"** zu entwickeln,
-        mit dem man evaluieren/quantifizieren kann wie gut verschiedene Methoden funktionieren.
-        Am besten in mehreren Sprachen.
-
-        Das Setup muss nicht perfekt sein -
-        es gibt offensichtlich Wörter,
-        über die man sich streiten kann.
-
-        Typischerweise hat man aber eine **vorgefertigte Liste von Wörtern,**
-        die man am ehesten erwartet
-        und kann z.B. mittels **Mean Reciprocal Rank**
-        (z.B. jeweils mit dem höchsten Rank eines Wortes aus dem Ground Truth Set)
-        dann ein Gesamtscore errechnen
-        und so verschiedene Methoden vergleichen.
-
-        Bsp.:
-
-        1st tf-idf ranked word appears in ground truth set --> ReciprocalRank = 1.0
-        2nd tf-idf ranked word appears in ground truth set --> RR = 0.5
-        none of the tf-idf ranked words appears in ground truth set --> RR = 0.0
-        """
-
         """ load source and corresponding target words from Purdue Team (ground truth data for dictionary creation) """
 
         if load:
@@ -248,28 +230,28 @@ class DictionaryCreator(object):
         """ compute MRR to evaluate DC """
 
         def compute_mean_reciprocal_rank():
-            # Filter target semantic domains that we are going to check because ground truth set is limited:
-            # We only consider semdoms which have at least one source word in the gt set with a target translation.
-            target_semdoms = defaultdict(list)
-            for source_word, semdoms in tqdm(self.source_qids_by_word.items(),
-                                             desc=f'filtering {self.target_language} semantic domains',
-                                             total=len(self.source_qids_by_word)):
+            # Filter target question that we are going to check because ground truth set is limited:
+            # We only consider questions which have at least one source word in the gt set with a target translation.
+            target_qids = defaultdict(list)
+            for source_word, qids in tqdm(self.source_qids_by_word.items(),
+                                          desc=f'filtering {self.target_language} question ids',
+                                          total=len(self.source_qids_by_word)):
                 target_words = list(df_test.query(f'source_word=="{source_word}"')['target_words'])
                 if len(target_words) == 0:
                     continue
                 target_words = target_words[0]
-                for semdom in semdoms:
-                    if semdom in self.top_tfidfs_by_qid:
-                        target_semdoms[semdom].extend(target_words)
-                    # some semdoms are missing in the target semdoms because no aligned words were found
+                for qid in qids:
+                    if qid in self.top_tfidfs_by_qid:
+                        target_qids[qid].extend(target_words)
+                    # some semantic domains are missing in the target sds because no aligned words were found
             print(
-                f"{len(target_semdoms)} of {len(self.top_tfidfs_by_qid)} {self.target_language} semdoms selected")
+                f"{len(target_qids)} of {len(self.top_tfidfs_by_qid)} {self.target_language} semantic domains selected")
 
             # in all selected target top_tfidfs, look for first ranked target word that also appears in df_test (gt data)
             mean_reciprocal_rank = 0
-            for semdom_question, target_words in target_semdoms.items():
-                word_list = list(self.top_tfidfs_by_qid[semdom_question].index)
-                print(semdom_question, word_list, target_words)
+            for qid, target_words in target_qids.items():
+                word_list = list(self.top_tfidfs_by_qid[qid].index)
+                print(qid, self.source_question_by_qid[qid], word_list, target_words)
                 reciprocal_rank = 0
                 for idx, word in enumerate(word_list):
                     if word in target_words:
@@ -277,26 +259,27 @@ class DictionaryCreator(object):
                         break
                 print(reciprocal_rank)
                 mean_reciprocal_rank += reciprocal_rank
-            mean_reciprocal_rank /= len(target_semdoms)
+            mean_reciprocal_rank /= len(target_qids)
             return mean_reciprocal_rank
 
-        # print(f'MRR: {compute_mean_reciprocal_rank()}')
+        print(f'MRR: {compute_mean_reciprocal_rank()}')
 
         """ remove all target words with a TF-IDF value below a threshold """
 
-        def filter_target_semdoms_with_threshold():
+        def filter_target_sds_with_threshold():
             threshold = 0.02
-            filtered_target_semdoms = dict()
+            filtered_target_sds = dict()
             for qid, tf_idfs_df in self.top_tfidfs_by_qid.items():
-                filtered_target_semdoms[qid] = list(tf_idfs_df[tf_idfs_df['TF-IDF'] > threshold].index.values)
-            return filtered_target_semdoms
+                filtered_target_sds[qid] = list(tf_idfs_df[tf_idfs_df['TF-IDF'] > threshold].index.values)
+            return filtered_target_sds
 
-        predicted_target_words_by_qid = filter_target_semdoms_with_threshold()
+        predicted_target_words_by_qid = filter_target_sds_with_threshold()
 
         """
         Compute precision, recall, and F1 score to evaluate DC. This requires a ground-truth semantic domain
         dictionary for the target language.
         """
+
         def compute_f1_score():
             num_positive_words = 0
             num_true_positive_words = 0
@@ -308,17 +291,17 @@ class DictionaryCreator(object):
                     num_true_positive_words += word in self.gt_target_words_by_qid.get(qid, [])
 
             num_ground_truth_target_words = 0
-            for _, semdoms in tqdm(self.target_qids_by_word.items(),
-                                   desc=f'counting words in {self.target_language} semantic domains',
-                                   total=len(self.target_qids_by_word)):
-                num_ground_truth_target_words += len(semdoms)
+            for _, sds in tqdm(self.target_qids_by_word.items(),
+                               desc=f'counting words in {self.target_language} semantic domains',
+                               total=len(self.target_qids_by_word)):
+                num_ground_truth_target_words += len(sds)
 
             # Which share of the found target words actually appears in the ground-truth set?
             precision = num_true_positive_words / num_positive_words
             print(f'precision: {precision} ({num_true_positive_words} '
                   f'out of {num_positive_words} found {self.target_language} words are correct)')
 
-            # Which share of the target semdoms in the ground-truth set was actually found?
+            # Which share of the target sds in the ground-truth set was actually found?
             recall = num_true_positive_words / num_ground_truth_target_words
             print(f'recall: {recall} ({num_true_positive_words} '
                   f'out of {num_ground_truth_target_words} {self.target_language} words found)')
@@ -326,12 +309,20 @@ class DictionaryCreator(object):
             f1 = 2 * (precision * recall) / (precision + recall)
             print(f'F1: {f1}')
             return f1
+
         compute_f1_score()
+
+        # How many of the source words appear in the source verses?
+        def compute_source_word_coverage():
+            num_words_in_source_corpus = len(self.source_qids_by_word.keys() & self.source_tokens_set)
+            return num_words_in_source_corpus / len(self.source_qids_by_word)
+
+        print(f'Source word coverage: {compute_source_word_coverage()}')
 
 
 if __name__ == '__main__':
     dc = DictionaryCreator('eng', 'fra')
-    # dc.dc_preprocessing(save=True)
-    # dc.dc_train_tfidf_based_model(load=True, save=True)
+    dc.dc_preprocessing(save=True)
+    dc.dc_train_tfidf_based_model(load=True, save=True)
     dc.dc_evaluate(load=True)
     # sid_with_word_clustering()
