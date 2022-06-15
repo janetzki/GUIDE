@@ -7,10 +7,29 @@ from collections import defaultdict
 
 
 class DictionaryCreator(object):
-    def __init__(self, source_language, target_language):
-        print(f'source language: {source_language}, target language: {target_language}')
-        self.source_language = source_language
-        self.target_language = target_language
+    def __init__(self):
+        self.source_language = 'eng'
+        self.target_language = 'fra'
+        print(f'source language: {self.source_language}, target language: {self.target_language}')
+
+        bibles_by_language = {
+            'eng': 'eng-eng-kjv.txt',
+            'tha': 'san-santha.txt',
+            'fra': 'fra-fra_fob.txt',
+            # 'fra': 'fra-fraLSG.txt',
+            'deu': 'no semdoms available/deu-deuelo.txt',
+            'spa': 'spaRV1909.txt',
+            'rus': 'rus-russyn.txt',
+            'ind': 'ind-ind.txt',
+            'tel': 'san-santel.txt',
+            'urd': 'san-sanurd.txt'
+        }
+
+        self.source_bible = bibles_by_language[self.source_language]
+        self.target_bible = bibles_by_language[self.target_language]
+
+        self.file_suffix = f'{self.source_language}-{self.target_language}'
+        self.state_file_name = f'dc_state-{self.file_suffix}.pkl'
         self.base_path = '../experiments'
         self.data_path = os.path.join(self.base_path, 'data')
         # self.vectorizer = TfidfVectorizer(max_df=0.05, min_df=5) # without alignment
@@ -26,7 +45,7 @@ class DictionaryCreator(object):
         self.top_tfidfs_by_qid = None
 
     def _save_state(self):
-        with open(os.path.join(self.data_path, 'dc_state.pkl'), 'wb') as pklfile:
+        with open(os.path.join(self.data_path, self.state_file_name), 'wb') as state_file:
             pickle.dump((self.source_tokens_set,
                          self.source_qids_by_word,
                          self.source_question_by_qid,
@@ -34,36 +53,39 @@ class DictionaryCreator(object):
                          self.aligned_target_words_by_qid,
                          self.target_qids_by_word,
                          self.top_tfidfs_by_qid),
-                        pklfile)
+                        state_file)
 
     def _load_state(self):
-        with open(os.path.join(self.data_path, 'dc_state.pkl'), 'rb') as pklfile:
+        with open(os.path.join(self.data_path, self.state_file_name), 'rb') as state_file:
             (self.source_tokens_set,
              self.source_qids_by_word,
              self.source_question_by_qid,
              self.gt_target_words_by_qid,
              self.aligned_target_words_by_qid,
              self.target_qids_by_word,
-             self.top_tfidfs_by_qid) = pickle.load(pklfile)
+             self.top_tfidfs_by_qid) = pickle.load(state_file)
 
     def dc_preprocessing(self, save=False):
-        source_bible = 'eng-eng-kjv.txt'
-        target_bible = 'fra-fra_fob.txt'  # 'fra-fra_fob.txt' 'fra-fraLSG.txt' 'deu-deuelo.txt' 'spa-spaRV1909.txt'
-
         def load_data():
             # load sds
             df_source = pd.read_csv(
                 f'{self.base_path}/../semdom extractor/output/semdom_qa_clean_{self.source_language}.csv')
-            df_target = pd.read_csv(
-                f'{self.base_path}/../semdom extractor/output/semdom_qa_clean_{self.target_language}.csv')
+
+            if os.path.isfile(f'{self.base_path}/../semdom extractor/output/semdom_qa_clean_{self.target_language}.csv'):
+                df_target = pd.read_csv(
+                    f'{self.base_path}/../semdom extractor/output/semdom_qa_clean_{self.target_language}.csv')
+            else:
+                print(f'WARNING: unable to load {self.base_path}/../semdom extractor/output/semdom_qa_clean_{self.target_language}.csv')
+                df_target = None
+
             # dfc = df.groupby(['cid', 'category']).agg(list)
 
             # load source and target bible
             scripture_dir = '../load bibles in DGraph/content/scripture_public_domain'
             source_verses = None
             target_verses = None
-            with open(os.path.join(scripture_dir, source_bible), 'r') as eng:
-                with open(os.path.join(scripture_dir, target_bible), 'r') as deu:
+            with open(os.path.join(scripture_dir, self.source_bible), 'r') as eng:
+                with open(os.path.join(scripture_dir, self.target_bible), 'r') as deu:
                     source_verses = eng.readlines()
                     target_verses = deu.readlines()
             assert (len(source_verses) == len(target_verses))
@@ -92,7 +114,8 @@ class DictionaryCreator(object):
             return qid_by_word, words_by_qid, question_by_qid
 
         self.source_qids_by_word, _, self.source_question_by_qid = build_sds(df_source)
-        self.target_qids_by_word, self.gt_target_words_by_qid, _ = build_sds(df_target)
+        if self.target_language != 'deu':
+            self.target_qids_by_word, self.gt_target_words_by_qid, _ = build_sds(df_target)
 
         def tokenize_all_verses():
             # optional: Use tokenizer from huggingface
@@ -107,29 +130,27 @@ class DictionaryCreator(object):
 
         def combine_alignments():
             # combine source and target verses into a single file for word aligner
-            with open(f'{self.data_path}/{self.source_language}-{self.target_language}.txt', 'w') as combined_bibles:
+            with open(f'{self.data_path}/{self.file_suffix}.txt', 'w') as combined_bibles:
                 for idx, (source_tokens, target_tokens) in enumerate(
                         zip(source_tokens_by_verse, target_tokens_by_verse)):
                     if len(source_tokens) * len(target_tokens) == 0 and len(source_tokens) + len(target_tokens) > 0:
-                        print(idx)  # verse is missing in one language
+                        # print(idx)  # verse is missing in one language
+                        pass
                     if len(source_tokens) * len(target_tokens) == 0:
                         source_tokens = ['#placeholder#']
                         target_tokens = ['#placeholder#']
                     combined_bibles.write(' '.join(source_tokens) + ' ||| ' + ' '.join(target_tokens) + '\n')
+            # print(subprocess.call(['sh', f"align_bibles.sh", self.source_language, self.target_language]))
 
-        # combine_alignments()
-
-        # !fast_align/build/fast_align -i data/eng-fra.txt -d -o -v > data/eng-fra-forward.align
-        # !fast_align/build/fast_align -i data/eng-fra.txt -d -o -v -r > data/eng-fra-reverse.align
-        # !fast_align/build/atools -i data/eng-fra-forward.align -j data/eng-fra-reverse.align -c grow-diag-final-and > data/eng-fra-diag.align
+        combine_alignments()
 
         """ maps words in target language to semantic domains """
 
-        def map_target_words_to_sds():
+        def map_target_words_to_qids():
             target_words_by_qid = defaultdict(str)
             matched_qids = set()
 
-            with open(f'{self.data_path}/{self.source_language}-{self.target_language}-diag.align',
+            with open(f'{self.data_path}/diag-{self.file_suffix}.align',
                       'r') as alignment_file:
                 alignment = alignment_file.readlines()
                 for alignment_line, source_tokens, target_tokens in tqdm(
@@ -160,12 +181,12 @@ class DictionaryCreator(object):
                         matched_qids = {*matched_qids, *new_qids}
             return target_words_by_qid
 
-        self.aligned_target_words_by_qid = map_target_words_to_sds()
+        self.aligned_target_words_by_qid = map_target_words_to_qids()
 
         def show_mapped_words():
             idx = 1  # idx <= 4505 # 7938 questions, 1915 sds (for eng-deu)
-            sd_name = list(self.aligned_target_words_by_qid.keys())[idx]
-            print(sd_name)
+            question = list(self.aligned_target_words_by_qid.keys())[idx]
+            print(question)
             print(list((self.aligned_target_words_by_qid.values()))[idx])
 
         show_mapped_words()
@@ -192,7 +213,7 @@ class DictionaryCreator(object):
                 qid = list(self.aligned_target_words_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=["TF-IDF"])
                 df = df.sort_values('TF-IDF', ascending=False)
-                # TODO: cut off words with score 0.0
+                # optional: cut off words with score 0.0
                 top_tfidfs_by_qid[qid] = df.head(20)
             return top_tfidfs_by_qid
 
@@ -224,15 +245,15 @@ class DictionaryCreator(object):
             # df_test = df_test.groupby(['target_words']).agg(list)
             return df_test
 
-        df_test = load_test_data()
-        df_test
 
         """ compute MRR to evaluate DC """
-
         def compute_mean_reciprocal_rank():
             # Filter target question that we are going to check because ground truth set is limited:
             # We only consider questions which have at least one source word in the gt set with a target translation.
+            if self.target_language == 'urd':
+                return None
             target_qids = defaultdict(list)
+            df_test = load_test_data()
             for source_word, qids in tqdm(self.source_qids_by_word.items(),
                                           desc=f'filtering {self.target_language} question ids',
                                           total=len(self.source_qids_by_word)):
@@ -245,7 +266,7 @@ class DictionaryCreator(object):
                         target_qids[qid].extend(target_words)
                     # some semantic domains are missing in the target sds because no aligned words were found
             print(
-                f"{len(target_qids)} of {len(self.top_tfidfs_by_qid)} {self.target_language} semantic domains selected")
+                f"{len(target_qids)} of {len(self.top_tfidfs_by_qid)} {self.target_language} questions selected")
 
             # in all selected target top_tfidfs, look for first ranked target word that also appears in df_test (gt data)
             mean_reciprocal_rank = 0
@@ -321,8 +342,7 @@ class DictionaryCreator(object):
 
 
 if __name__ == '__main__':
-    dc = DictionaryCreator('eng', 'fra')
+    dc = DictionaryCreator()
     dc.dc_preprocessing(save=True)
     dc.dc_train_tfidf_based_model(load=True, save=True)
     dc.dc_evaluate(load=True)
-    # sid_with_word_clustering()
