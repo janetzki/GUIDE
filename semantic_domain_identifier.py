@@ -1,4 +1,33 @@
-def sid_with_word_clustering():
+import pprint
+
+from dictionary_creator import DictionaryCreator
+
+pp = pprint.PrettyPrinter(indent=4)
+
+
+def sdi_with_dictionary_lookup():
+    dc = DictionaryCreator()
+
+    # choose bible translations as evaluation data
+    # tokenize the bible
+    # dc.dc_preprocessing(save=True)
+    # dc.dc_train_tfidf_based_model(load=True, save=True)
+    dc._load_state()
+
+    # lookup each token in the dictionary to indentify semantic domains
+    scored_qids = list()
+    for word in dc.target_tokens_by_verse[0]:
+        normalized_word = word.lower()
+        if normalized_word in dc.top_qids_by_word:
+            for qid, tfidf in dc.top_qids_by_word[normalized_word.lower()]:
+                question = dc.source_question_by_qid[qid]
+                scored_qids.append((normalized_word, qid, question, tfidf))
+    pp.pprint(scored_qids)
+
+    # TODO: evaluate identified semantic domains with verse-semdom mappings from human labeler
+
+
+def sdi_with_word_clustering():
     # Author: Olivier Grisel <olivier.grisel@ensta.org>
     #         Lars Buitinck
     #         Chyi-Kwei Yau <chyikwei.yau@gmail.com>
@@ -10,7 +39,6 @@ def sid_with_word_clustering():
 
     from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
     from sklearn.decomposition import NMF, LatentDirichletAllocation
-    from sklearn.datasets import fetch_20newsgroups
 
     n_samples = 2000
     n_features = 10000
@@ -153,3 +181,7 @@ def sid_with_word_clustering():
 
     tf_feature_names = tf_vectorizer.get_feature_names_out()
     plot_top_words(lda, tf_feature_names, n_top_words, "Topics in LDA model")
+
+
+if __name__ == '__main__':
+    sdi_with_dictionary_lookup()
