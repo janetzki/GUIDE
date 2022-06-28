@@ -1,19 +1,20 @@
 import os
-import pandas as pd
 import pickle
-from sklearn.feature_extraction.text import TfidfVectorizer
-from tqdm import tqdm
 from collections import defaultdict
+
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
+from tqdm import tqdm
 
 
 class DictionaryCreator(object):
     def __init__(self):
-        self.source_language = 'eng-web'
-        self.target_language = ''
+        self.source_language = 'eng-kjv'
+        self.target_language = 'deu'
         print(f'source language: {self.source_language}, target language: {self.target_language}')
 
         bibles_by_language = {
@@ -25,12 +26,11 @@ class DictionaryCreator(object):
             'ind': 'ind-ind.txt',
             'deu': 'no semdoms available/deu-deuelo.txt',
             'rus': 'no semdoms available/rus-russyn.txt',
-            # 'tha': '',
-            # 'tel': '',
-            # 'urd': '',
-            # 'hin': '',
-            # 'khm': '',
-            # 'nep': '',
+            'tha': 'tha-thaKJV.txt',
+            'tel': 'tel-telirv.txt',
+            'urd': 'urd-urdgvu.txt',
+            'hin': 'hin-hinirv.txt',
+            'nep': 'nep-nepulb.txt',
         }
 
         self.source_bible = bibles_by_language[self.source_language]
@@ -41,17 +41,21 @@ class DictionaryCreator(object):
         self.base_path = '../experiments'
         self.data_path = os.path.join(self.base_path, 'data')
         # self.vectorizer = TfidfVectorizer(max_df=0.05, min_df=5) # without alignment
-        self.vectorizer = TfidfVectorizer() #max_df=0.5, min_df=2)  # with alignment
+        self.vectorizer = TfidfVectorizer()  # max_df=0.5, min_df=2)  # with alignment
 
         # Saved data
+        self.source_tokens_by_verse = None
         self.source_verse_tokens_set = None
         self.source_qids_by_word = None
         self.source_question_by_qid = None
+
+        self.target_tokens_by_verse = None
         self.target_verse_tokens_set = None
         self.gt_target_words_by_qid = None
         self.gt_target_qids_by_word = None
         self.aligned_target_words_by_qid = None
         self.top_tfidfs_by_qid = None
+        self.top_qids_by_word = None
 
     def _save_state(self):
         with open(os.path.join(self.data_path, self.state_file_name), 'wb') as state_file:
@@ -62,7 +66,11 @@ class DictionaryCreator(object):
                          self.gt_target_words_by_qid,
                          self.gt_target_qids_by_word,
                          self.aligned_target_words_by_qid,
-                         self.top_tfidfs_by_qid),
+                         self.top_tfidfs_by_qid,
+
+                         self.source_tokens_by_verse,
+                         self.target_tokens_by_verse,
+                         self.top_qids_by_word),
                         state_file)
 
     def _load_state(self):
@@ -74,7 +82,11 @@ class DictionaryCreator(object):
              self.gt_target_words_by_qid,
              self.gt_target_qids_by_word,
              self.aligned_target_words_by_qid,
-             self.top_tfidfs_by_qid) = pickle.load(state_file)
+             self.top_tfidfs_by_qid,
+
+             self.source_tokens_by_verse,
+             self.target_tokens_by_verse,
+             self.top_qids_by_word) = pickle.load(state_file)
 
     def dc_preprocessing(self, save=False):
         def load_data():
@@ -141,20 +153,20 @@ class DictionaryCreator(object):
             tokens_by_verse = [tokenizer.encode(verse).tokens for verse in verses]
             return tokens_by_verse
 
-        source_tokens_by_verse = tokenize_verses(source_verses, os.path.join(
+        self.source_tokens_by_verse = tokenize_verses(source_verses, os.path.join(
             '../load bibles in DGraph/content/scripture_public_domain', self.source_bible))
-        target_tokens_by_verse = tokenize_verses(target_verses, os.path.join(
+        self.target_tokens_by_verse = tokenize_verses(target_verses, os.path.join(
             '../load bibles in DGraph/content/scripture_public_domain', self.target_bible))
         self.source_verse_tokens_set = set(
-            [token.lower() for source_tokens in source_tokens_by_verse for token in source_tokens])
+            [token.lower() for source_tokens in self.source_tokens_by_verse for token in source_tokens])
         self.target_verse_tokens_set = set(
-            [token.lower() for target_tokens in target_tokens_by_verse for token in target_tokens])
+            [token.lower() for target_tokens in self.target_tokens_by_verse for token in target_tokens])
 
         def combine_alignments():
             # combine source and target verses into a single file for word aligner
             with open(f'{self.data_path}/{self.file_suffix}.txt', 'w') as combined_bibles:
                 for idx, (source_tokens, target_tokens) in enumerate(
-                        zip(source_tokens_by_verse, target_tokens_by_verse)):
+                        zip(self.source_tokens_by_verse, self.target_tokens_by_verse)):
                     if len(source_tokens) * len(target_tokens) == 0 and len(source_tokens) + len(target_tokens) > 0:
                         # print(idx)  # verse is missing in one language
                         pass
@@ -175,7 +187,7 @@ class DictionaryCreator(object):
                 alignment = alignment_file.readlines()
                 assert (len(alignment) == len(source_verses))
                 for (idx, alignment_line), source_tokens, target_tokens in tqdm(
-                        zip(enumerate(alignment), source_tokens_by_verse, target_tokens_by_verse),
+                        zip(enumerate(alignment), self.source_tokens_by_verse, self.target_tokens_by_verse),
                         desc=f'matching {self.target_language} words with semantic domain questions',
                         total=len(source_verses)):
                     if alignment_line == '\n':
@@ -229,7 +241,7 @@ class DictionaryCreator(object):
 
         def build_top_tfidfs():
             top_tfidfs_by_qid = {}
-            assert(len(tfidfs) == len(self.aligned_target_words_by_qid))
+            assert (tfidfs.shape[0] == len(self.aligned_target_words_by_qid))
             for idx, tfidf in tqdm(enumerate(tfidfs), desc='collecting top tf-idf scores', total=tfidfs.shape[0]):
                 qid = list(self.aligned_target_words_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=["TF-IDF"])
@@ -240,7 +252,11 @@ class DictionaryCreator(object):
 
         self.top_tfidfs_by_qid = build_top_tfidfs()
 
-        sorted(self.top_tfidfs_by_qid.items())[0]
+        # build self.top_qids_by_word
+        self.top_qids_by_word = defaultdict(list)
+        for qid, tfidfs_df in self.top_tfidfs_by_qid.items():
+            for word, tfidf in zip(list(tfidfs_df.index.values), list(tfidfs_df['TF-IDF'])):
+                self.top_qids_by_word[word].append((qid, tfidf))
 
         if save:
             self._save_state()
@@ -254,11 +270,11 @@ class DictionaryCreator(object):
         """ remove all target words with a TF-IDF value below a threshold """
 
         def filter_target_sds_with_threshold():
-            threshold = 0.02
-            filtered_target_sds = dict()
-            for qid, tf_idfs_df in self.top_tfidfs_by_qid.items():
-                filtered_target_sds[qid] = list(tf_idfs_df[tf_idfs_df['TF-IDF'] > threshold].index.values)
-            return filtered_target_sds
+            threshold = 0.15
+            filtered_target_words_by_qid = dict()
+            for qid, tfidfs_df in self.top_tfidfs_by_qid.items():
+                filtered_target_words_by_qid[qid] = list(tfidfs_df[tfidfs_df['TF-IDF'] > threshold].index.values)
+            return filtered_target_words_by_qid
 
         predicted_target_words_by_qid = filter_target_sds_with_threshold()
 
@@ -355,7 +371,7 @@ class DictionaryCreator(object):
 
             return f1
 
-        compute_f1_score()
+        # compute_f1_score()
 
         def load_test_data():
             df_test = pd.read_csv(f'{self.data_path}/multilingual_semdom_dictionary.csv')
@@ -374,6 +390,7 @@ class DictionaryCreator(object):
         def compute_mean_reciprocal_rank():
             # Filter target question that we are going to check because ground truth set is limited:
             # We only consider questions which have at least one source word in the gt set with a target translation.
+            # TODO: Also filter out source words (and questions, if empty) that do not appear in the source verses. (e.g., "snake" does not appear in the KJV bible)
             if self.target_language == 'urd':
                 return None
             target_qids = defaultdict(list)
@@ -401,9 +418,9 @@ class DictionaryCreator(object):
                         break
                 print(qid)
                 print('\t', self.source_question_by_qid[qid])
-                print('\t found words:', word_list)
-                print('\t reference words:', target_words)
-                print(f'\t RR: {reciprocal_rank:.2f}\n')
+                print('\t found (positive) words:', word_list)
+                print('\t reference (true) words:', target_words)
+                print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
                 mean_reciprocal_rank += reciprocal_rank
             mean_reciprocal_rank /= len(target_qids)
             print(
@@ -415,6 +432,6 @@ class DictionaryCreator(object):
 
 if __name__ == '__main__':
     dc = DictionaryCreator()
-    dc.dc_preprocessing(save=True)
-    dc.dc_train_tfidf_based_model(load=True, save=True)
+    # dc.dc_preprocessing(save=True)
+    # dc.dc_train_tfidf_based_model(load=True, save=True)
     dc.dc_evaluate(load=True)
