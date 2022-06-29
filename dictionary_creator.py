@@ -22,19 +22,15 @@ class DictionaryCreator(object):
             self.appears_in_bible = appears_in_bible
 
         def __str__(self):
-            return f'{self.iso_language} ### {self.text}'
+            return f'{self.iso_language}: {self.text}'
 
         def add_aligned_word(self, word):
             self.aligned_words[str(word)] += 1
 
     def __init__(self):
-        self.source_bids = ['bid-eng-kjv']  # , 'bid-eng-web']
-        self.target_bids = ['bid-deu',
-                            'bid-fra-fob'
-                            ]  # 'bid-fra-fob', 'bid-fra-lsg', 'bid-spa', 'bid-ind', 'bid-tel', 'bid-tha', 'bid-hin', 'bid-nep', 'bid-urd', 'bid-rus'
-        self.target_langs = [self._convert_bid_to_lang(bid) for bid in self.target_bids]
-        self.bids = self.source_bids + self.target_bids
-        print(f'source languages: {self.source_bids}, target languages: {self.target_bids}')
+        self.bids = ['bid-eng-kjv', 'bid-eng-web', 'bid-deu',
+                     'bid-fra-fob']  # 'bid-fra-fob', 'bid-fra-lsg', 'bid-spa', 'bid-ind', 'bid-tel', 'bid-tha', 'bid-hin', 'bid-nep', 'bid-urd', 'bid-rus'
+        self.target_langs = [self._convert_bid_to_lang(bid) for bid in self.bids]
 
         self.bibles_by_bid = {
             'bid-eng-kjv': 'eng-eng-kjv.txt',
@@ -52,7 +48,7 @@ class DictionaryCreator(object):
             'bid-nep': 'nep-nepulb.txt',
         }
 
-        self.state_file_name = f'dc_state-{self.source_bids}-{self.target_bids}.dill'
+        self.state_file_name = f'dc_state-{self.bids}.dill'
         self.base_path = '../experiments'
         self.data_path = os.path.join(self.base_path, 'data')
         self.vectorizer = TfidfVectorizer()
@@ -160,8 +156,8 @@ class DictionaryCreator(object):
             file = os.path.join(
                 '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
-            tokenizer.pre_tokenizer = Whitespace()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words)
-            trainer = BpeTrainer(special_tokens=['[UNK]', '[CLS]', '[SEP]', '[PAD]', '[MASK]'])
+            tokenizer.pre_tokenizer = Whitespace()
+            trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words)
             tokenizer.train(files=[file], trainer=trainer)
 
             # tokenize all verses
@@ -181,7 +177,7 @@ class DictionaryCreator(object):
                     self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, [], True)
 
     def _combine_alignments(self):
-        # combine source and target verses into a single file for wtxt aligner
+        # combine verses from two different bibles into a single file for wtxt aligner
         for bid_1 in self.bids:
             for bid_2 in self.bids:
                 if bid_1 >= bid_2:
@@ -196,7 +192,7 @@ class DictionaryCreator(object):
                             bid_1_wtxts = ['#placeholder#']
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
-                if not os.path.isfile(f'{self.base_path}/data/diag-{bid_1}-{bid_2}.align'):
+                if not os.path.isfile(f'{self.base_path}/data/diag_[{bid_1}]_[{bid_2}].align'):
                     print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2]))
 
     def _add_bidirectional_edge(self, wtxt1, wtxt2, lang1, lang2):
@@ -248,7 +244,7 @@ class DictionaryCreator(object):
             for bid_2 in self.bids:
                 if bid_1 >= bid_2:
                     continue
-                with open(f'{self.data_path}/diag-{bid_1}-{bid_2}.align', 'r') as alignment_file:
+                with open(f'{self.data_path}/diag_[{bid_1}]_[{bid_2}].align', 'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
@@ -264,14 +260,18 @@ class DictionaryCreator(object):
     def _build_top_tfidfs(self):
         self.top_tfidfs_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
-            tfidfs = self.vectorizer.fit_transform(
-                list(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]['eng'].values()))  # todo: use all languages
-            assert (tfidfs.shape[0] == len(
-                self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]['eng']))  # todo: use all languages
+
+            # merge alignments from all languages together
+            merged_alignments = defaultdict(str)
+            for lang in self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]:
+                for qid in self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][lang]:
+                    merged_alignments[qid] += self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][lang][qid]
+
+            tfidfs = self.vectorizer.fit_transform(list(merged_alignments.values()))
+            assert (tfidfs.shape[0] == len(merged_alignments))
             for idx, tfidf in tqdm(enumerate(tfidfs), desc=f'collecting top {target_lang} tf-idf scores',
                                    total=tfidfs.shape[0]):  # caution: might fail in the debugger
-                qid = list(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]['eng'].keys())[
-                    idx]  # todo: use all languages
+                qid = list(merged_alignments.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)
                 df = df[df['TF-IDF'] > 0]
@@ -422,7 +422,7 @@ class DictionaryCreator(object):
         if target_lang == 'urd':
             return None
         target_qids = defaultdict(list)
-        source_lang = self._convert_bid_to_lang(self.source_bids[0])  # todo: also do this for other source_langs
+        source_lang = 'eng'  # todo: also do this for other source_langs
         df_test = self._load_test_data(source_lang, target_lang)
         for source_wtxt in tqdm(self.words_by_text_by_lang[source_lang].values(),
                                 desc=f'filtering {target_lang} question ids',
@@ -445,11 +445,11 @@ class DictionaryCreator(object):
                 if wtxt in target_wtxts:
                     reciprocal_rank = 1 / (idx + 1)
                     break
-            print(qid)
-            print('\t', self.question_by_qid_by_lang[source_lang][qid])
-            print('\t found (positive) words:', wtxt_list)
-            print('\t reference (true) words:', target_wtxts)
-            print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
+            # print(qid)
+            # print('\t', self.question_by_qid_by_lang[source_lang][qid])
+            # print('\t found (positive) words:', wtxt_list)
+            # print('\t reference (true) words:', target_wtxts)
+            # print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
             mean_reciprocal_rank += reciprocal_rank
         mean_reciprocal_rank /= len(target_qids)
         print(
@@ -467,6 +467,6 @@ class DictionaryCreator(object):
 
 if __name__ == '__main__':
     dc = DictionaryCreator()
-    #dc.preprocess_data(save=True)
-    #dc.train_tfidf_based_model(load=True, save=True)
+    dc.preprocess_data(save=True)
+    dc.train_tfidf_based_model(load=True, save=True)
     dc.evaluate(load=True)
