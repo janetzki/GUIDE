@@ -1,9 +1,9 @@
 import os
+import subprocess
 from collections import defaultdict, Counter
 
 import dill
 import pandas as pd
-import subprocess
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -12,21 +12,14 @@ from tokenizers.trainers import BpeTrainer
 from tqdm import tqdm
 
 
-def _group_words_by_qid(words):
-    wtxts_by_qid = defaultdict(list)
-    for word in words.values():
-        for qid in word.qids:
-            wtxts_by_qid[qid].append(word.text)
-    return wtxts_by_qid
-
-
 class DictionaryCreator(object):
     class Word:
-        def __init__(self, text, lang, qids=None):
+        def __init__(self, text, lang, qids=None, appears_in_bible=False):
             self.text = text
             self.iso_language = lang
             self.aligned_words = Counter()
             self.qids = set() if qids is None else qids
+            self.appears_in_bible = appears_in_bible
 
         def __str__(self):
             return f'{self.iso_language} ### {self.text}'
@@ -37,7 +30,8 @@ class DictionaryCreator(object):
     def __init__(self):
         self.source_bids = ['bid-eng-kjv']  # , 'bid-eng-web']
         self.target_bids = ['bid-deu',
-                            'bid-fra-fob']  # 'bid-fra-fob', 'bid-fra-lsg', 'bid-spa', 'bid-ind', 'bid-tel', 'bid-tha', 'bid-hin', 'bid-nep', 'bid-urd', 'bid-rus'
+                            'bid-fra-fob'
+                            ]  # 'bid-fra-fob', 'bid-fra-lsg', 'bid-spa', 'bid-ind', 'bid-tel', 'bid-tha', 'bid-hin', 'bid-nep', 'bid-urd', 'bid-rus'
         self.target_langs = [self._convert_bid_to_lang(bid) for bid in self.target_bids]
         self.bids = self.source_bids + self.target_bids
         print(f'source languages: {self.source_bids}, target languages: {self.target_bids}')
@@ -69,7 +63,6 @@ class DictionaryCreator(object):
         self.verses_by_bid = None
         self.words_by_text_by_lang = None
         self.question_by_qid_by_lang = None
-        self.wtxts_set_by_lang = None
         self.aligned_wtxts_by_qid_by_lang_by_lang = None
         self.top_tfidfs_by_qid_by_lang = None
         self.top_qids_by_wtxt_by_lang = None
@@ -79,6 +72,14 @@ class DictionaryCreator(object):
         # example: bid-eng-kjv -> eng
         return bid[4:7]
 
+    @staticmethod
+    def _group_words_by_qid(words):
+        wtxts_by_qid = defaultdict(list)
+        for word in words.values():
+            for qid in word.qids:
+                wtxts_by_qid[qid].append(word.text)
+        return wtxts_by_qid
+
     def _save_state(self):
         # save all class variables to a dill file
         with open(os.path.join(self.data_path, self.state_file_name), 'wb') as state_file:
@@ -86,7 +87,6 @@ class DictionaryCreator(object):
                        self.verses_by_bid,
                        self.words_by_text_by_lang,
                        self.question_by_qid_by_lang,
-                       self.wtxts_set_by_lang,
                        self.aligned_wtxts_by_qid_by_lang_by_lang,
                        self.top_tfidfs_by_qid_by_lang,
                        self.top_qids_by_wtxt_by_lang),
@@ -98,7 +98,6 @@ class DictionaryCreator(object):
              self.verses_by_bid,
              self.words_by_text_by_lang,
              self.question_by_qid_by_lang,
-             self.wtxts_set_by_lang,
              self.aligned_wtxts_by_qid_by_lang_by_lang,
              self.top_tfidfs_by_qid_by_lang,
              self.top_qids_by_wtxt_by_lang) = dill.load(state_file)
@@ -143,7 +142,7 @@ class DictionaryCreator(object):
                 answer = row.answer.replace("'", '')
                 answer = answer.replace('"', '')
                 qid = f'{row.cid} {row.question_index}'
-                words = {wtxt: DictionaryCreator.Word(wtxt.strip(), lang, [qid]) for wtxt in answer.split(',') if wtxt}
+                words = {wtxt: self.Word(wtxt.strip(), lang, [qid]) for wtxt in answer.split(',') if wtxt}
 
                 # add new words to words_by_text_by_lang
                 for word in words.values():
@@ -156,13 +155,12 @@ class DictionaryCreator(object):
 
     def _tokenize_verses(self):
         self.wtxts_by_verse_by_bid = {}
-        self.wtxts_set_by_lang = defaultdict(set)
 
         for bid in self.bids:
             file = os.path.join(
                 '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
-            tokenizer.pre_tokenizer = Whitespace()
+            tokenizer.pre_tokenizer = Whitespace()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words)
             trainer = BpeTrainer(special_tokens=['[UNK]', '[CLS]', '[SEP]', '[PAD]', '[MASK]'])
             tokenizer.train(files=[file], trainer=trainer)
 
@@ -172,7 +170,15 @@ class DictionaryCreator(object):
             wtxts_by_verse = [[wtxt.lower() for wtxt in verse] for verse in wtxts_by_verse]
 
             self.wtxts_by_verse_by_bid[bid] = wtxts_by_verse.copy()
-            self.wtxts_set_by_lang[self._convert_bid_to_lang(bid)].update(set([wtxt for wtxts in wtxts_by_verse for wtxt in wtxts]))
+
+            # mark words as appearing in the bible
+            lang = self._convert_bid_to_lang(bid)
+            wtxts_set = set([wtxt for wtxts in wtxts_by_verse for wtxt in wtxts])
+            for wtxt in wtxts_set:
+                if wtxt in self.words_by_text_by_lang[lang]:
+                    self.words_by_text_by_lang[lang][wtxt].appears_in_bible = True
+                else:
+                    self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, [], True)
 
     def _combine_alignments(self):
         # combine source and target verses into a single file for wtxt aligner
@@ -194,10 +200,10 @@ class DictionaryCreator(object):
                     print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2]))
 
     def _add_bidirectional_edge(self, wtxt1, wtxt2, lang1, lang2):
-        if wtxt1 not in self.words_by_text_by_lang[lang1]:
-            self.words_by_text_by_lang[lang1][wtxt1] = DictionaryCreator.Word(wtxt1, lang1)
-        if wtxt2 not in self.words_by_text_by_lang[lang2]:
-            self.words_by_text_by_lang[lang2][wtxt2] = DictionaryCreator.Word(wtxt2, lang2)
+        # if wtxt1 not in self.words_by_text_by_lang[lang1]:
+        #     self.words_by_text_by_lang[lang1][wtxt1] = self.Word(wtxt1, lang1)
+        # if wtxt2 not in self.words_by_text_by_lang[lang2]:
+        #     self.words_by_text_by_lang[lang2][wtxt2] = self.Word(wtxt2, lang2)
         word1 = self.words_by_text_by_lang[lang1][wtxt1]
         word2 = self.words_by_text_by_lang[lang2][wtxt2]
         word1.add_aligned_word(word2)
@@ -205,21 +211,20 @@ class DictionaryCreator(object):
 
     def _map_two_bibles(self, alignment, bid_1, bid_2):
         # map words in two bibles to semantic domains
+        # caveat: This function ignores wtxts that could not be aligned.
         lang_1 = self._convert_bid_to_lang(bid_1)
         lang_2 = self._convert_bid_to_lang(bid_2)
         for alignment_line, wtxts_1, wtxts_2 in tqdm(
                 zip(alignment, self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2]),
                 desc=f'matching {bid_1} and {bid_2} words and semantic domain questions bidirectionally',
                 total=len(self.verses_by_bid[bid_1])):
-            if alignment_line == '\n':
+            if alignment_line in ('\n', '0-0\n') and len(wtxts_1) * len(wtxts_2) == 0:
                 continue
             aligned_wtxt_pairs = alignment_line.split(' ')
             aligned_wtxt_pairs[-1].replace('\n', '')
 
             for aligned_wtxt_pair in aligned_wtxt_pairs:
                 wtxt_1_idx, wtxt_2_idx = [int(num) for num in aligned_wtxt_pair.split('-')]
-                if aligned_wtxt_pair == '0-0\n' and len(wtxts_1) * len(wtxts_2) == 0:
-                    continue
                 wtxt_1 = wtxts_1[wtxt_1_idx]
                 wtxt_2 = wtxts_2[wtxt_2_idx]
 
@@ -229,15 +234,15 @@ class DictionaryCreator(object):
                 # add qids
                 new_qids_1 = self.words_by_text_by_lang[lang_1][wtxt_1].qids
                 for new_qid_1 in new_qids_1:
-                    self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][new_qid_1] += ', ' + wtxt_2
+                    self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][lang_1][new_qid_1] += ', ' + wtxt_2
 
                 new_qids_2 = self.words_by_text_by_lang[lang_2][wtxt_2].qids
                 for new_qid_2 in new_qids_2:
-                    self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1][new_qid_2] += ', ' + wtxt_1
+                    self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1][lang_2][new_qid_2] += ', ' + wtxt_1
 
     def _map_target_words_to_qids(self):
         # map words in all target language bibles to semantic domains
-        self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(str))
+        self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
 
         for bid_1 in self.bids:
             for bid_2 in self.bids:
@@ -259,11 +264,14 @@ class DictionaryCreator(object):
     def _build_top_tfidfs(self):
         self.top_tfidfs_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
-            tfidfs = self.vectorizer.fit_transform(list(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang].values()))
-            assert (tfidfs.shape[0] == len(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]))
+            tfidfs = self.vectorizer.fit_transform(
+                list(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]['eng'].values()))  # todo: use all languages
+            assert (tfidfs.shape[0] == len(
+                self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]['eng']))  # todo: use all languages
             for idx, tfidf in tqdm(enumerate(tfidfs), desc=f'collecting top {target_lang} tf-idf scores',
                                    total=tfidfs.shape[0]):  # caution: might fail in the debugger
-                qid = list(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang].keys())[idx]
+                qid = list(self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]['eng'].keys())[
+                    idx]  # todo: use all languages
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)
                 df = df[df['TF-IDF'] > 0]
@@ -301,7 +309,7 @@ class DictionaryCreator(object):
         """
         num_positive_wtxts = 0
         num_true_positive_wtxts = 0
-        gt_target_wtxts_by_qid = _group_words_by_qid(self.words_by_text_by_lang[target_lang])
+        gt_target_wtxts_by_qid = self._group_words_by_qid(self.words_by_text_by_lang[target_lang])
 
         if len(gt_target_wtxts_by_qid) == 0:
             print(
@@ -333,8 +341,9 @@ class DictionaryCreator(object):
                                        desc=f'collecting words in {target_lang} semantic domains',
                                        total=len(gt_target_wtxts_by_qid)):
             num_total_gt_target_wtxts += len(wtxts_for_question)
-            overlap = [wtxt for wtxt in wtxts_for_question if wtxt in self.wtxts_set_by_lang[
-                target_lang]]  # TODO: Is wtxts_set_by_lang[lang] == words_by_text_by_lang[lang].keys()? If yes, replace it.
+            overlap = [wtxt for wtxt in wtxts_for_question if
+                       wtxt in self.words_by_text_by_lang[target_lang]
+                       and self.words_by_text_by_lang[target_lang][wtxt].appears_in_bible]
             num_total_gt_sd_wtxts_in_target_verses += len(overlap)
             # single_wtxts = [wtxt for wtxt in overlap if ' ' not in wtxt]
             # num_total_single_gt_sd_wtxts_in_target_verses += len(single_wtxts)
@@ -409,11 +418,11 @@ class DictionaryCreator(object):
         # compute MRR to evaluate DC
         # Filter target question that we are going to check because ground truth set is limited:
         # We only consider questions which have at least one source wtxt in the gt set with a target translation.
-        # TODO: Also filter out source wtxts (and questions, if empty) that do not appear in the source verses. (e.g., 'snake' does not appear in the KJV bible)
+        # todo: Also filter out source wtxts (and questions, if empty) that do not appear in the source verses. (e.g., 'snake' does not appear in the KJV bible)
         if target_lang == 'urd':
             return None
         target_qids = defaultdict(list)
-        source_lang = self._convert_bid_to_lang(self.source_bids[0])  # TODO: also do this for other source_langs
+        source_lang = self._convert_bid_to_lang(self.source_bids[0])  # todo: also do this for other source_langs
         df_test = self._load_test_data(source_lang, target_lang)
         for source_wtxt in tqdm(self.words_by_text_by_lang[source_lang].values(),
                                 desc=f'filtering {target_lang} question ids',
