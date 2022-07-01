@@ -1,9 +1,15 @@
+import math
 import os
 import subprocess
 from collections import defaultdict, Counter
 
 import dill
+import matplotlib.patches as mpatches
+import networkx as nx
 import pandas as pd
+import seaborn as sns
+from matplotlib import pyplot as plt
+from polyglot.text import Text
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -27,10 +33,9 @@ class DictionaryCreator(object):
         def add_aligned_word(self, word):
             self.aligned_words[str(word)] += 1
 
-    def __init__(self):
-        self.bids = ['bid-eng-kjv', 'bid-eng-web', 'bid-deu',
-                     'bid-fra-fob']  # 'bid-fra-fob', 'bid-fra-lsg', 'bid-spa', 'bid-ind', 'bid-tel', 'bid-tha', 'bid-hin', 'bid-nep', 'bid-urd', 'bid-rus'
-        self.target_langs = [self._convert_bid_to_lang(bid) for bid in self.bids]
+    def __init__(self, bids):
+        self.bids = bids
+        self.target_langs = set([self._convert_bid_to_lang(bid) for bid in self.bids])
 
         self.bibles_by_bid = {
             'bid-eng-kjv': 'eng-eng-kjv.txt',
@@ -48,20 +53,30 @@ class DictionaryCreator(object):
             'bid-nep': 'nep-nepulb.txt',
         }
 
-        self.state_file_name = f'dc_state-{self.bids}.dill'
+        self.state_file_name = "dc_state.dill"  # f'dc_state-{self.bids}.dill'
         self.base_path = '../experiments'
         self.data_path = os.path.join(self.base_path, 'data')
         self.vectorizer = TfidfVectorizer()
-        self.wtxts_by_verse_by_bid = None
 
-        # Saved data
+        # Saved data (preprocessing)
         self.sds_by_lang = None
         self.verses_by_bid = None
         self.words_by_text_by_lang = None
         self.question_by_qid_by_lang = None
+        self.wtxts_by_verse_by_bid = None
+
+        # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = None
+
+        # Saved data (training)
         self.top_tfidfs_by_qid_by_lang = None
         self.top_qids_by_wtxt_by_lang = None
+
+    @staticmethod
+    def _initialize_if_none(variable, default_value):
+        # do not initialize variable if it already has been loaded from a file
+        if variable is None:
+            variable = default_value
 
     @staticmethod
     def _convert_bid_to_lang(bid):
@@ -76,36 +91,56 @@ class DictionaryCreator(object):
                 wtxts_by_qid[qid].append(word.text)
         return wtxts_by_qid
 
+    @staticmethod
+    def _transliterate_word(word):
+        if word.iso_language == 'hin':
+            return ' '.join(Text(word.text, word.iso_language).transliterate('en'))
+        return word.text
+
     def _save_state(self):
+        print('Saving state...')
+
+        # make a backup copy of the dill file
+        os.system(f'cp {self.data_path}/{self.state_file_name} {self.data_path}/{self.state_file_name}.bak')
+
         # save all class variables to a dill file
         with open(os.path.join(self.data_path, self.state_file_name), 'wb') as state_file:
             dill.dump((self.sds_by_lang,
                        self.verses_by_bid,
                        self.words_by_text_by_lang,
                        self.question_by_qid_by_lang,
+                       self.wtxts_by_verse_by_bid,
                        self.aligned_wtxts_by_qid_by_lang_by_lang,
                        self.top_tfidfs_by_qid_by_lang,
                        self.top_qids_by_wtxt_by_lang),
                       state_file)
+        print('State saved.')
 
     def _load_state(self):
+        print('Loading state...')
         with open(os.path.join(self.data_path, self.state_file_name), 'rb') as state_file:
             (self.sds_by_lang,
              self.verses_by_bid,
              self.words_by_text_by_lang,
              self.question_by_qid_by_lang,
+             self.wtxts_by_verse_by_bid,
              self.aligned_wtxts_by_qid_by_lang_by_lang,
              self.top_tfidfs_by_qid_by_lang,
              self.top_qids_by_wtxt_by_lang) = dill.load(state_file)
+        print('State loaded.')
 
     def _load_data(self):
         # load sds and bible verses for all languages
-        self.sds_by_lang = {}
-        self.verses_by_bid = {}
+        self._initialize_if_none(self.sds_by_lang, {})
+        self._initialize_if_none(self.verses_by_bid, {})
 
         languages = set([self._convert_bid_to_lang(bid) for bid in self.bids])
-        for lang in languages:
+        for lang in tqdm(languages, desc='Loading semantic domains', total=len(languages)):
             # load sds
+            if lang in self.sds_by_lang:
+                print(f'Skipped: SDs for {lang} already loaded')
+                continue
+
             sd_path = f'{self.base_path}/../semdom extractor/output/semdom_qa_clean_{lang}.csv'
             if os.path.isfile(sd_path):
                 self.sds_by_lang[lang] = pd.read_csv(sd_path)
@@ -116,11 +151,14 @@ class DictionaryCreator(object):
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
                 assert (lang in ('deu', 'rus'))
 
-        for bid in self.bids:
+        for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
             # load bible verses
-            with open(
-                    os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid]),
-                    'r') as bible:
+            if bid in self.verses_by_bid:
+                print(f'Skipped: Bible {bid} already loaded')
+                continue
+
+            with open(os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid]),
+                      'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
             assert (len(self.verses_by_bid[bid]) == 41899)
 
@@ -128,10 +166,14 @@ class DictionaryCreator(object):
         # convert sd dataframe to dictionary
         # optional: increase performance by querying wtxts from words_eng
         # optional: increase performance by using dataframe instead of dict
-        self.words_by_text_by_lang = defaultdict(dict)
-        self.question_by_qid_by_lang = defaultdict(dict)
+        self._initialize_if_none(self.words_by_text_by_lang, defaultdict(dict))
+        self._initialize_if_none(self.question_by_qid_by_lang, defaultdict(dict))
 
-        for lang, sds in self.sds_by_lang.items():
+        for lang, sds in tqdm(self.sds_by_lang.items(), desc='Building semantic domains', total=len(self.sds_by_lang)):
+            if lang in self.words_by_text_by_lang:
+                print(f'Skipped: Words and SD questions for {lang} already loaded')
+                continue
+
             for index, row in sds.iterrows():
                 question = row.question.replace("'", '')
                 question = question.replace('"', '')
@@ -150,14 +192,18 @@ class DictionaryCreator(object):
                 self.question_by_qid_by_lang[lang][qid] = question
 
     def _tokenize_verses(self):
-        self.wtxts_by_verse_by_bid = {}
+        self._initialize_if_none(self.wtxts_by_verse_by_bid, {})
 
-        for bid in self.bids:
+        for bid in tqdm(self.bids, desc='Tokenizing verses', total=len(self.bids)):
+            if bid in self.wtxts_by_verse_by_bid:
+                print(f'Skipped: Bible {bid} already tokenized')
+                continue
+
             file = os.path.join(
                 '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
             tokenizer.pre_tokenizer = Whitespace()
-            trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words)
+            trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words) possible solution: use pre-defined word list for English
             tokenizer.train(files=[file], trainer=trainer)
 
             # tokenize all verses
@@ -182,9 +228,17 @@ class DictionaryCreator(object):
             for bid_2 in self.bids:
                 if bid_1 >= bid_2:
                     continue
-                with open(f'{self.data_path}/{bid_1}-{bid_2}.txt', 'w') as combined_bibles:
-                    for idx, (bid_1_wtxts, bid_2_wtxts) in enumerate(
-                            zip(self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2])):
+
+                combined_bibles_file_path = f'{self.data_path}/{bid_1}-{bid_2}.txt'
+                if os.path.isfile(combined_bibles_file_path):
+                    print(f'Skipped: Combined bible {combined_bibles_file_path} already exists')
+                    continue
+
+                with open(combined_bibles_file_path, 'w') as combined_bibles:
+                    for idx, (bid_1_wtxts, bid_2_wtxts) in tqdm(enumerate(
+                            zip(self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2])),
+                            desc=f'Combining alignments for {bid_1} and {bid_2}',
+                            total=len(self.wtxts_by_verse_by_bid[bid_1])):
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0 and len(bid_1_wtxts) + len(bid_2_wtxts) > 0:
                             # print(idx)  # verse is missing in one bible
                             pass
@@ -192,27 +246,38 @@ class DictionaryCreator(object):
                             bid_1_wtxts = ['#placeholder#']
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
+
                 if not os.path.isfile(f'{self.base_path}/data/diag_[{bid_1}]_[{bid_2}].align'):
                     print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2]))
 
-    def _add_bidirectional_edge(self, wtxt1, wtxt2, lang1, lang2):
-        # if wtxt1 not in self.words_by_text_by_lang[lang1]:
-        #     self.words_by_text_by_lang[lang1][wtxt1] = self.Word(wtxt1, lang1)
-        # if wtxt2 not in self.words_by_text_by_lang[lang2]:
-        #     self.words_by_text_by_lang[lang2][wtxt2] = self.Word(wtxt2, lang2)
+    def preprocess_data(self, load=False, save=False):
+        if load:
+            self._load_state()
+        self._load_data()
+        self._build_sds()
+        self._tokenize_verses()
+        self._combine_alignments()
+        if save:
+            self._save_state()
+
+    def _add_directed_edge(self, wtxt1, wtxt2, lang1, lang2):
         word1 = self.words_by_text_by_lang[lang1][wtxt1]
         word2 = self.words_by_text_by_lang[lang2][wtxt2]
         word1.add_aligned_word(word2)
-        word2.add_aligned_word(word1)
 
     def _map_two_bibles(self, alignment, bid_1, bid_2):
         # map words in two bibles to semantic domains
-        # caveat: This function ignores wtxts that could not be aligned.
+        # Caveat: This function ignores wtxts that could not be aligned.
         lang_1 = self._convert_bid_to_lang(bid_1)
         lang_2 = self._convert_bid_to_lang(bid_2)
+
+        if lang_2 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1]:
+            print(f'Skipped: {bid_1} and {bid_2} already mapped')
+            return
+
         for alignment_line, wtxts_1, wtxts_2 in tqdm(
                 zip(alignment, self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2]),
-                desc=f'matching {bid_1} and {bid_2} words and semantic domain questions bidirectionally',
+                desc=f'Map {bid_1} and {bid_2} words and semantic domain questions bidirectionally',
                 total=len(self.verses_by_bid[bid_1])):
             if alignment_line in ('\n', '0-0\n') and len(wtxts_1) * len(wtxts_2) == 0:
                 continue
@@ -224,22 +289,28 @@ class DictionaryCreator(object):
                 wtxt_1 = wtxts_1[wtxt_1_idx]
                 wtxt_2 = wtxts_2[wtxt_2_idx]
 
-                # add alignment edge
-                self._add_bidirectional_edge(wtxt_1, wtxt_2, lang_1, lang_2)
-
-                # add qids
+                # add alignment edge and qids
+                self._add_directed_edge(wtxt_1, wtxt_2, lang_1, lang_2)
                 new_qids_1 = self.words_by_text_by_lang[lang_1][wtxt_1].qids
                 for new_qid_1 in new_qids_1:
                     self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][lang_1][new_qid_1] += ', ' + wtxt_2
 
+                if lang_1 == lang_2 and wtxt_1 == wtxt_2:
+                    continue
+
+                # add alignment edge and qids for opposite direction
+                self._add_directed_edge(wtxt_2, wtxt_1, lang_2, lang_1)
                 new_qids_2 = self.words_by_text_by_lang[lang_2][wtxt_2].qids
                 for new_qid_2 in new_qids_2:
                     self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1][lang_2][new_qid_2] += ', ' + wtxt_1
 
-    def _map_target_words_to_qids(self):
+    def map_target_words_to_qids(self, load=False, save=False):
         # map words in all target language bibles to semantic domains
-        self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
+        if load:
+            self._load_state()
 
+        self._initialize_if_none(self.aligned_wtxts_by_qid_by_lang_by_lang,
+                                 defaultdict(lambda: defaultdict(lambda: defaultdict(str))))
         for bid_1 in self.bids:
             for bid_2 in self.bids:
                 if bid_1 >= bid_2:
@@ -248,28 +319,91 @@ class DictionaryCreator(object):
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
-    def preprocess_data(self, save=False):
-        self._load_data()
-        self._build_sds()
-        self._tokenize_verses()
-        self._combine_alignments()
-        self._map_target_words_to_qids()
         if save:
             self._save_state()
 
+    def plot_graph(self, load=False):
+        if load:
+            self._load_state()
+
+        # flatmap words
+        word_nodes = [word for lang in self.words_by_text_by_lang
+                      for word in self.words_by_text_by_lang[lang].values()
+                      if word.iso_language in self.target_langs]
+
+        # get all edges for alignments between words in flat list
+        weighted_edges = []
+        for lang_1 in self.words_by_text_by_lang:
+            if lang_1 not in self.target_langs:
+                continue
+            for word_1 in self.words_by_text_by_lang[lang_1].values():
+                for word_2_str, count in word_1.aligned_words.items():
+                    lang_2, wtxt_2 = word_2_str.split(': ')
+                    if lang_2 not in self.target_langs or (lang_1 == lang_2 and word_1.text == wtxt_2) or count <= 3:
+                        continue
+                    word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
+                    weighted_edges.append([word_1, word_2, count])
+
+        # create graph structure with NetworkX
+        graph = nx.Graph()
+        graph.add_nodes_from(word_nodes)
+        graph.add_weighted_edges_from(weighted_edges)
+
+        # set figure size
+        plt.figure(figsize=(10, 10))
+
+        # define subgraph
+        node = self.words_by_text_by_lang['eng']['tree']
+        neighbors = list(graph.neighbors(node)) + [node]
+        G = graph.subgraph(neighbors)
+
+        # use a different node color for each language
+        palette = sns.color_palette('pastel')  # ('hls', len(self.target_langs))
+        palette = {lang: color for lang, color in zip(self.target_langs, palette)}
+        node_colors = [palette[word.iso_language] for word in G.nodes()]
+
+        # show all the colors in a legend
+        plt.legend(handles=[mpatches.Patch(color=palette[lang], label=lang) for lang in self.target_langs])
+
+        # define position of nodes in figure
+        pos = nx.nx_agraph.graphviz_layout(G)
+
+        # draw nodes
+        nx.draw_networkx_nodes(G, pos=pos, node_color=node_colors)
+
+        # draw only word texts as node labels
+        nx.draw_networkx_labels(G, pos=pos, labels={word: self._transliterate_word(word) for word in G.nodes()})
+
+        # draw edges (thicker edges for more frequent alignments
+        widths = [math.log(e[2]) + 1 for e in G.edges(data='weight')]
+        nx.draw_networkx_edges(G, pos=pos, edgelist=G.edges(), width=widths, alpha=0.5, edge_color='grey')
+
+        # draw edge labels
+        edge_weights = nx.get_edge_attributes(G, 'weight')
+        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_weights)
+
+        # plot the title
+        plt.title('Aligned words')
+
+        plt.show()
+        return
+
     def _build_top_tfidfs(self):
-        self.top_tfidfs_by_qid_by_lang = defaultdict(dict)
+        self._initialize_if_none(self.top_tfidfs_by_qid_by_lang, defaultdict(dict))
+
         for target_lang in self.target_langs:
 
-            # merge alignments from all languages together
+            # merge alignments from all other aligned languages together
             merged_alignments = defaultdict(str)
             for lang in self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang]:
+                if lang != 'eng':
+                    continue
                 for qid in self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][lang]:
                     merged_alignments[qid] += self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][lang][qid]
 
             tfidfs = self.vectorizer.fit_transform(list(merged_alignments.values()))
             assert (tfidfs.shape[0] == len(merged_alignments))
-            for idx, tfidf in tqdm(enumerate(tfidfs), desc=f'collecting top {target_lang} tf-idf scores',
+            for idx, tfidf in tqdm(enumerate(tfidfs), desc=f'Collecting top {target_lang} tf-idf scores',
                                    total=tfidfs.shape[0]):  # caution: might fail in the debugger
                 qid = list(merged_alignments.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
@@ -283,7 +417,7 @@ class DictionaryCreator(object):
         self._build_top_tfidfs()
 
         # build self.top_qids_by_wtxt_by_lang
-        self.top_qids_by_wtxt_by_lang = defaultdict(lambda: defaultdict(list))
+        self._initialize_if_none(self.top_qids_by_wtxt_by_lang, defaultdict(lambda: defaultdict(list)))
         for target_lang in self.target_langs:
             for qid, tfidfs_df in self.top_tfidfs_by_qid_by_lang[target_lang].items():
                 for wtxt, tfidf in zip(list(tfidfs_df.index.values), list(tfidfs_df['TF-IDF'])):
@@ -312,13 +446,14 @@ class DictionaryCreator(object):
         gt_target_wtxts_by_qid = self._group_words_by_qid(self.words_by_text_by_lang[target_lang])
 
         if len(gt_target_wtxts_by_qid) == 0:
-            print(
-                f'Cannot compute F1 score etc. for {target_lang} because no ground-truth target semantic domains have been loaded')
+            print(f'Cannot compute F1 score etc. for {target_lang} '
+                  f'because no ground-truth target semantic domains have been loaded')
             return
 
         for qid, wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
-                               desc=f'counting true positive words in {target_lang} semantic domains',
-                               total=len(predicted_target_wtxts_by_qid)):
+                               desc=f'Counting true positive words in {target_lang} semantic domains',
+                               total=len(predicted_target_wtxts_by_qid),
+                               disable=True):
             num_positive_wtxts += len(wtxts)
             for wtxt in wtxts:
                 num_true_positive_wtxts += wtxt in gt_target_wtxts_by_qid.get(qid, [])
@@ -327,8 +462,9 @@ class DictionaryCreator(object):
         # num_total_sd_source_wtxts = 0
         # num_total_sd_wtxts_in_source_verses = 0
         # for _, wtxts_for_question in tqdm(self..items(),
-        #                                   desc=f'collecting words in {self.source_language} semantic domains',
-        #                                   total=len(self.)):
+        #                                   desc=f'Collecting words in {self.source_language} semantic domains',
+        #                                   total=len(self.),
+        #                                   disable=True):
         #     num_total_sd_source_wtxts += len(wtxts_for_question)
         #     overlap = wtxts_for_question & self.source_verse_wtxts_set
         #     num_total_sd_wtxts_in_source_verses += len(wtxts_for_question & self.source_verse_wtxts_set)
@@ -338,8 +474,9 @@ class DictionaryCreator(object):
         num_total_gt_sd_wtxts_in_target_verses = 0
         # num_total_single_gt_sd_wtxts_in_target_verses = 0
         for wtxts_for_question in tqdm(gt_target_wtxts_by_qid.values(),
-                                       desc=f'collecting words in {target_lang} semantic domains',
-                                       total=len(gt_target_wtxts_by_qid)):
+                                       desc=f'Collecting words in {target_lang} semantic domains',
+                                       total=len(gt_target_wtxts_by_qid),
+                                       disable=True):
             num_total_gt_target_wtxts += len(wtxts_for_question)
             overlap = [wtxt for wtxt in wtxts_for_question if
                        wtxt in self.words_by_text_by_lang[target_lang]
@@ -351,52 +488,52 @@ class DictionaryCreator(object):
         # How many of the found target wtxts actually appear in the ground-truth set?
         precision = num_true_positive_wtxts / num_positive_wtxts
         print(f'precision: {precision:.3f} ({num_true_positive_wtxts} '
-              f'out of {num_positive_wtxts} found {target_lang} semantic domain words are correct)')
+              f'/ {num_positive_wtxts} found {target_lang} semantic domain words are correct)')
 
         # How many of the target sd wtxts in the ground-truth set were actually found?
         recall = num_true_positive_wtxts / num_total_gt_target_wtxts
-        print(f'recall: {recall:.3f} ({num_true_positive_wtxts} '
-              f'out of {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found)')
+        print(f'recall:    {recall:.3f} ({num_true_positive_wtxts} '
+              f'/ {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found)')
 
         f1 = 2 * (precision * recall) / (precision + recall)
-        print(f'F1: {f1:.3f}\n')
+        print(f'F1:        {f1:.3f}')
 
-        # # How many of the source wtxts appear in the source verses?
-        # source_wtxt_coverage = num_total_sd_wtxts_in_source_verses / num_total_sd_source_wtxts
-        # print(f'Source wtxt coverage: {source_wtxt_coverage:.3f} ({num_total_sd_wtxts_in_source_verses} '
-        #       f'out of {len(num_total_sd_source_wtxts)} {self.source_language} actual non-unique semantic domain words '
-        #       f'also appear in the source verses)')
+        # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
+        # was actually found?
+        recall_adjusted = num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
+        print(f'recall*:   {recall_adjusted:.3f} ({num_true_positive_wtxts} '
+              f'/ {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
+              f'- that also appear in the target verses - found)')
+
+        f1_adjusted = 2 * (precision * recall_adjusted) / (precision + recall_adjusted)
+        print(f'F1*:       {f1_adjusted:.3f}\n')
 
         # How many of the gt target wtxts appear in the target verses?
         target_wtxt_coverage = num_total_gt_sd_wtxts_in_target_verses / num_total_gt_target_wtxts
         print(
             f'Ground truth target word coverage: {target_wtxt_coverage:.3f} ({num_total_gt_sd_wtxts_in_target_verses} '
-            f'out of {num_total_gt_target_wtxts} {target_lang} actual non-unique semantic domain words '
+            f'/ {num_total_gt_target_wtxts} {target_lang} actual non-unique semantic domain words '
             f'also appear in the target verses)')
 
-        # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
-        # was actually found?
-        recall_adjusted = num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
-        print(f'recall*: {recall_adjusted:.3f} ({num_true_positive_wtxts} '
-              f'out of {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
-              f'- that also appear in the target verses - found)')
-
-        f1_adjusted = 2 * (precision * recall_adjusted) / (precision + recall_adjusted)
-        print(f'F1*: {f1_adjusted:.3f}\n')
+        # # How many of the source wtxts appear in the source verses?
+        # source_wtxt_coverage = num_total_sd_wtxts_in_source_verses / num_total_sd_source_wtxts
+        # print(f'Source wtxt coverage: {source_wtxt_coverage:.3f} ({num_total_sd_wtxts_in_source_verses} '
+        #       f'/ {len(num_total_sd_source_wtxts)} {self.source_language} actual non-unique semantic domain words '
+        #       'also appear in the source verses)')
 
         # optional: consider wtxt groups vs. single wtxts in calculation
         # # How many of the single gt target wtxts appear in the target verses?
         # target_wtxt_coverage = num_total_single_gt_sd_wtxts_in_target_verses / num_total_gt_target_wtxts
         # print(f'Ground truth single target wtxt coverage: {target_wtxt_coverage:.3f} ({num_total_single_gt_sd_wtxts_in_target_verses} '
-        #       f'out of {num_total_gt_target_wtxts} {self.target_language} actual non-unique semantic domain words '
-        #       f'also appear in the target verses)')
+        #       f'/ {num_total_gt_target_wtxts} {self.target_language} actual non-unique semantic domain words '
+        #       'also appear in the target verses)')
         #
         # # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # # was actually found?
         # recall_adjusted2 = num_true_positive_wtxts / num_total_single_gt_sd_wtxts_in_target_verses
         # print(f'recall**: {recall_adjusted2:.3f} ({num_true_positive_wtxts} '
-        #       f'out of {num_total_single_gt_sd_wtxts_in_target_verses} {self.target_language} actual single semantic domain words '
-        #       f'- that also appear in the target verses - found)')
+        #       f'/ {num_total_single_gt_sd_wtxts_in_target_verses} {self.target_language} actual single semantic domain words '
+        #       '- that also appear in the target verses - found)')
         #
         # f1_adjusted2 = 2 * (precision * recall_adjusted2) / (precision + recall_adjusted2)
         # print(f'F1**: {f1_adjusted2:.3f}')
@@ -414,7 +551,7 @@ class DictionaryCreator(object):
         # df_test = df_test.groupby(['target_wtxts']).agg(list)
         return df_test
 
-    def _compute_mean_reciprocal_rank(self, target_lang):
+    def _compute_mean_reciprocal_rank(self, target_lang, print_reciprocal_ranks=False):
         # compute MRR to evaluate DC
         # Filter target question that we are going to check because ground truth set is limited:
         # We only consider questions which have at least one source wtxt in the gt set with a target translation.
@@ -425,8 +562,9 @@ class DictionaryCreator(object):
         source_lang = 'eng'  # todo: also do this for other source_langs
         df_test = self._load_test_data(source_lang, target_lang)
         for source_wtxt in tqdm(self.words_by_text_by_lang[source_lang].values(),
-                                desc=f'filtering {target_lang} question ids',
-                                total=len(self.words_by_text_by_lang[source_lang])):
+                                desc=f'Filtering {target_lang} question ids',
+                                total=len(self.words_by_text_by_lang[source_lang]),
+                                disable=True):
             target_wtxts = list(df_test.query(f'source_wtxt=="{source_wtxt.text}"')['target_wtxts'])
             if len(target_wtxts) == 0:
                 continue
@@ -445,28 +583,46 @@ class DictionaryCreator(object):
                 if wtxt in target_wtxts:
                     reciprocal_rank = 1 / (idx + 1)
                     break
-            # print(qid)
-            # print('\t', self.question_by_qid_by_lang[source_lang][qid])
-            # print('\t found (positive) words:', wtxt_list)
-            # print('\t reference (true) words:', target_wtxts)
-            # print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
+            if print_reciprocal_ranks:
+                print(qid)
+                print('\t', self.question_by_qid_by_lang[source_lang][qid])
+                print('\t found (positive) words:', wtxt_list)
+                print('\t reference (true) words:', target_wtxts)
+                print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
             mean_reciprocal_rank += reciprocal_rank
         mean_reciprocal_rank /= len(target_qids)
         print(
-            f'{len(target_qids)} of {len(self.top_tfidfs_by_qid_by_lang[target_lang])} {target_lang} questions selected')
+            f'{len(target_qids)} / {len(self.top_tfidfs_by_qid_by_lang[target_lang])} {target_lang} questions selected')
         print(f'MRR: {mean_reciprocal_rank:.3f}')
 
-    def evaluate(self, load=False):
+    def evaluate(self, load=False, print_reciprocal_ranks=False):
         if load:
             self._load_state()
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
         for target_lang in self.target_langs:
+            print(f'\n\n--- Evaluation for {target_lang} ---')
             self._compute_f1_score(filtered_target_wtxts_by_qid_by_lang[target_lang], target_lang)
-            self._compute_mean_reciprocal_rank(target_lang)
+            self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
 
 
 if __name__ == '__main__':
-    dc = DictionaryCreator()
-    dc.preprocess_data(save=True)
-    dc.train_tfidf_based_model(load=True, save=True)
-    dc.evaluate(load=True)
+    dc = DictionaryCreator([
+        'bid-eng-kjv',
+        # 'bid-eng-web',
+        'bid-fra-fob',
+        # 'bid-fra-lsg',
+        ##'bid-spa',
+        # 'bid-ind',
+        # 'bid-tel',
+        # 'bid-tha',
+        ##'bid-hin',
+        # 'bid-nep',
+        # 'bid-urd',
+        'bid-deu',
+        # 'bid-rus',
+    ])
+    # dc.preprocess_data(load=True, save=True)
+    # dc.map_target_words_to_qids(load=True, save=True)
+    dc.plot_graph(load=True)
+    # dc.train_tfidf_based_model(load=True, save=True)
+    # dc.evaluate(load=True, print_reciprocal_ranks=False)
