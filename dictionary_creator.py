@@ -35,8 +35,9 @@ class DictionaryCreator(object):
 
     def __init__(self, bids):
         self.bids = bids
-        self.target_langs = set([self._convert_bid_to_lang(bid) for bid in self.bids])
+        self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
 
+        self.all_langs = sorted(['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie'])
         self.bibles_by_bid = {
             'bid-eng-kjv': 'eng-eng-kjv.txt',
             'bid-eng-web': 'eng-eng-web.txt',
@@ -51,12 +52,14 @@ class DictionaryCreator(object):
             'bid-urd': 'urd-urdgvu.txt',
             'bid-hin': 'hin-hinirv.txt',
             'bid-nep': 'nep-nepulb.txt',
+            'bid-vie': 'no semdoms available/vie-vie1934.txt'
         }
 
         self.state_file_name = "dc_state.dill"  # f'dc_state-{self.bids}.dill'
         self.base_path = '../experiments'
         self.data_path = os.path.join(self.base_path, 'data')
         self.vectorizer = TfidfVectorizer()
+        self.state_loaded = False
 
         # Saved data (preprocessing)
         self.sds_by_lang = None
@@ -67,6 +70,9 @@ class DictionaryCreator(object):
 
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = None
+
+        # Saved data (plotting)
+        self.word_graph = None
 
         # Saved data (training)
         self.top_tfidfs_by_qid_by_lang = None
@@ -98,6 +104,7 @@ class DictionaryCreator(object):
         return word.text
 
     def _save_state(self):
+        # todo: save only changed subset of state to make this faster
         print('Saving state...')
 
         # make a backup copy of the dill file
@@ -105,28 +112,37 @@ class DictionaryCreator(object):
 
         # save all class variables to a dill file
         with open(os.path.join(self.data_path, self.state_file_name), 'wb') as state_file:
-            dill.dump((self.sds_by_lang,
-                       self.verses_by_bid,
-                       self.words_by_text_by_lang,
-                       self.question_by_qid_by_lang,
-                       self.wtxts_by_verse_by_bid,
-                       self.aligned_wtxts_by_qid_by_lang_by_lang,
-                       self.top_tfidfs_by_qid_by_lang,
-                       self.top_qids_by_wtxt_by_lang),
-                      state_file)
+            dill.dump({
+                'sds_by_lang': self.sds_by_lang,
+                'verses_by_bid': self.verses_by_bid,
+                'words_by_text_by_lang': self.words_by_text_by_lang,
+                'question_by_qid_by_lang': self.question_by_qid_by_lang,
+                'wtxts_by_verse_by_bid': self.wtxts_by_verse_by_bid,
+                'aligned_wtxts_by_qid_by_lang_by_lang': self.aligned_wtxts_by_qid_by_lang_by_lang,
+                'word_graph': self.word_graph,
+                'top_tfidfs_by_qid_by_lang': self.top_tfidfs_by_qid_by_lang,
+                'top_qids_by_wtxt_by_lang': self.top_qids_by_wtxt_by_lang
+            },
+                state_file)
         print('State saved.')
 
     def _load_state(self):
+        if self.state_loaded:
+            return
+
         print('Loading state...')
         with open(os.path.join(self.data_path, self.state_file_name), 'rb') as state_file:
-            (self.sds_by_lang,
-             self.verses_by_bid,
-             self.words_by_text_by_lang,
-             self.question_by_qid_by_lang,
-             self.wtxts_by_verse_by_bid,
-             self.aligned_wtxts_by_qid_by_lang_by_lang,
-             self.top_tfidfs_by_qid_by_lang,
-             self.top_qids_by_wtxt_by_lang) = dill.load(state_file)
+            state = dill.load(state_file)
+            self.sds_by_lang = state['sds_by_lang']
+            self.verses_by_bid = state['verses_by_bid']
+            self.words_by_text_by_lang = state['words_by_text_by_lang']
+            self.question_by_qid_by_lang = state['question_by_qid_by_lang']
+            self.wtxts_by_verse_by_bid = state['wtxts_by_verse_by_bid']
+            self.aligned_wtxts_by_qid_by_lang_by_lang = state['aligned_wtxts_by_qid_by_lang_by_lang']
+            self.word_graph = state['word_graph']
+            self.top_tfidfs_by_qid_by_lang = state['top_tfidfs_by_qid_by_lang']
+            self.top_qids_by_wtxt_by_lang = state['top_qids_by_wtxt_by_lang']
+        self.state_loaded = True
         print('State loaded.')
 
     def _load_data(self):
@@ -149,7 +165,7 @@ class DictionaryCreator(object):
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
-                assert (lang in ('deu', 'rus'))
+                assert (lang in ('deu', 'rus', 'vie'))
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
             # load bible verses
@@ -322,44 +338,55 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def plot_graph(self, load=False):
+    def plot_graph(self, load=False, lang='eng', text='tree', min_count=1):
         if load:
             self._load_state()
 
         # flatmap words
         word_nodes = [word for lang in self.words_by_text_by_lang
-                      for word in self.words_by_text_by_lang[lang].values()
-                      if word.iso_language in self.target_langs]
+                      for word in self.words_by_text_by_lang[lang].values()]
+        filtered_word_nodes = [word for word in word_nodes if word.iso_language in self.target_langs]
 
         # get all edges for alignments between words in flat list
         weighted_edges = []
         for lang_1 in self.words_by_text_by_lang:
-            if lang_1 not in self.target_langs:
-                continue
             for word_1 in self.words_by_text_by_lang[lang_1].values():
                 for word_2_str, count in word_1.aligned_words.items():
                     lang_2, wtxt_2 = word_2_str.split(': ')
-                    if lang_2 not in self.target_langs or (lang_1 == lang_2 and word_1.text == wtxt_2) or count <= 3:
-                        continue
                     word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                     weighted_edges.append([word_1, word_2, count])
+        filtered_weighted_edges = []
+        for edge in weighted_edges:
+            lang_1 = edge[0].iso_language
+            lang_2 = edge[1].iso_language
+            wtxt_1 = edge[0].text
+            wtxt_2 = edge[1].text
+            count = edge[2]
+            if lang_1 not in self.target_langs or lang_2 not in self.target_langs \
+                    or (lang_1 == lang_2 and wtxt_1 == wtxt_2) \
+                    or count <= min_count:
+                continue
+            filtered_weighted_edges.append(edge)
 
-        # create graph structure with NetworkX
-        graph = nx.Graph()
-        graph.add_nodes_from(word_nodes)
-        graph.add_weighted_edges_from(weighted_edges)
+        # create graph structures with NetworkX
+        self.word_graph = nx.Graph()
+        self.word_graph.add_nodes_from(word_nodes)
+        self.word_graph.add_weighted_edges_from(weighted_edges)
+        filtered_word_graph = nx.Graph()
+        filtered_word_graph.add_nodes_from(filtered_word_nodes)
+        filtered_word_graph.add_weighted_edges_from(filtered_weighted_edges)
 
         # set figure size
         plt.figure(figsize=(10, 10))
 
         # define subgraph
-        node = self.words_by_text_by_lang['eng']['tree']
-        neighbors = list(graph.neighbors(node)) + [node]
-        G = graph.subgraph(neighbors)
+        node = self.words_by_text_by_lang[lang][text]
+        neighbors = list(filtered_word_graph.neighbors(node)) + [node]
+        G = filtered_word_graph.subgraph(neighbors)
 
         # use a different node color for each language
         palette = sns.color_palette('pastel')  # ('hls', len(self.target_langs))
-        palette = {lang: color for lang, color in zip(self.target_langs, palette)}
+        palette = {lang: color for lang, color in zip(self.all_langs, palette.extend(palette))}
         node_colors = [palette[word.iso_language] for word in G.nodes()]
 
         # show all the colors in a legend
@@ -380,18 +407,39 @@ class DictionaryCreator(object):
 
         # draw edge labels
         edge_weights = nx.get_edge_attributes(G, 'weight')
-        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_weights)
+        if len(edge_weights):
+            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_weights)
 
         # plot the title
-        plt.title('Aligned words')
+        title = f'Words that fast_align aligned with the {lang} word "{text}"'
+        if min_count > 1:
+            title += f' at least {min_count} times'
+        plt.title(title)
 
         plt.show()
+
         return
+
+    def predict_links(self, load=False):
+        if load:
+            self._load_state()
+
+        preds = nx.jaccard_coefficient(self.word_graph)
+        # preds = nx.adamic_adar_index(self.word_graph)
+        # preds = nx.resource_allocation_index(self.word_graph)
+        max_score = 0
+        for u, v, p in preds:
+            if u.iso_language in self.target_langs and v.iso_language in self.target_langs and p and p >= max_score:
+                max_score = p
+                print(f"({u}, {v}) -> {p:.3f}")
 
     def _build_top_tfidfs(self):
         self._initialize_if_none(self.top_tfidfs_by_qid_by_lang, defaultdict(dict))
 
         for target_lang in self.target_langs:
+            if target_lang in self.top_tfidfs_by_qid_by_lang:
+                print(f'Skipped: top {target_lang} tfidfs already collected')
+                continue
 
             # merge alignments from all other aligned languages together
             merged_alignments = defaultdict(str)
@@ -609,20 +657,22 @@ if __name__ == '__main__':
     dc = DictionaryCreator([
         'bid-eng-kjv',
         # 'bid-eng-web',
-        'bid-fra-fob',
+        # 'bid-fra-fob',
         # 'bid-fra-lsg',
-        ##'bid-spa',
+        # 'bid-spa',
         # 'bid-ind',
         # 'bid-tel',
         # 'bid-tha',
-        ##'bid-hin',
+        # 'bid-hin',
         # 'bid-nep',
         # 'bid-urd',
         'bid-deu',
         # 'bid-rus',
+        'bid-vie',
     ])
-    # dc.preprocess_data(load=True, save=True)
-    # dc.map_target_words_to_qids(load=True, save=True)
-    dc.plot_graph(load=True)
+    dc.preprocess_data(load=True, save=True)
+    dc.map_target_words_to_qids(load=True, save=True)
+    dc.plot_graph(load=True, lang='deu', text='perle', min_count=1)
+    # dc.predict_links(load=True)
     # dc.train_tfidf_based_model(load=True, save=True)
     # dc.evaluate(load=True, print_reciprocal_ranks=False)
