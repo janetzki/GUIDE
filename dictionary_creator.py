@@ -75,8 +75,7 @@ class DictionaryCreator(object):
         self.word_graph = None
 
         # Saved data (training)
-        self.top_tfidfs_by_qid_by_lang = None
-        self.top_qids_by_wtxt_by_lang = None
+        self.top_scores_by_qid_by_lang = None
 
     @staticmethod
     def _initialize_if_none(variable, default_value):
@@ -120,8 +119,7 @@ class DictionaryCreator(object):
                 'wtxts_by_verse_by_bid': self.wtxts_by_verse_by_bid,
                 'aligned_wtxts_by_qid_by_lang_by_lang': self.aligned_wtxts_by_qid_by_lang_by_lang,
                 'word_graph': self.word_graph,
-                'top_tfidfs_by_qid_by_lang': self.top_tfidfs_by_qid_by_lang,
-                'top_qids_by_wtxt_by_lang': self.top_qids_by_wtxt_by_lang
+                'top_scores_by_qid_by_lang': self.top_scores_by_qid_by_lang,
             },
                 state_file)
         print('State saved.')
@@ -140,8 +138,7 @@ class DictionaryCreator(object):
             self.wtxts_by_verse_by_bid = state['wtxts_by_verse_by_bid']
             self.aligned_wtxts_by_qid_by_lang_by_lang = state['aligned_wtxts_by_qid_by_lang_by_lang']
             self.word_graph = state['word_graph']
-            self.top_tfidfs_by_qid_by_lang = state['top_tfidfs_by_qid_by_lang']
-            self.top_qids_by_wtxt_by_lang = state['top_qids_by_wtxt_by_lang']
+            self.top_scores_by_qid_by_lang = state['top_scores_by_qid_by_lang']
         self.state_loaded = True
         print('State loaded.')
 
@@ -338,7 +335,7 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def plot_graph(self, load=False, lang='eng', text='tree', min_count=1):
+    def plot_graph(self, load=False, save=False, lang='eng', text='tree', min_count=1):
         if load:
             self._load_state()
 
@@ -364,7 +361,7 @@ class DictionaryCreator(object):
             count = edge[2]
             if lang_1 not in self.target_langs or lang_2 not in self.target_langs \
                     or (lang_1 == lang_2 and wtxt_1 == wtxt_2) \
-                    or count <= min_count:
+                    or count < min_count:
                 continue
             filtered_weighted_edges.append(edge)
 
@@ -386,7 +383,8 @@ class DictionaryCreator(object):
 
         # use a different node color for each language
         palette = sns.color_palette('pastel')  # ('hls', len(self.target_langs))
-        palette = {lang: color for lang, color in zip(self.all_langs, palette.extend(palette))}
+        palette += [palette[2]] * 10  # hack to add color for 'vie' that is different from 'eng'
+        palette = {lang: color for lang, color in zip(self.all_langs, palette)}
         node_colors = [palette[word.iso_language] for word in G.nodes()]
 
         # show all the colors in a legend
@@ -418,26 +416,162 @@ class DictionaryCreator(object):
 
         plt.show()
 
-        return
+        if save:
+            self._save_state()
 
-    def predict_links(self, load=False):
+    def _find_link_candidates(self):
+        # # find all pairs of nodes in the word graph with a common neighbor
+        # link_candidates = set()
+        # words_in_target_langs = [word for lang in self.target_langs
+        #                             for word in self.words_by_text_by_lang[lang].values()]
+        # for word_1 in tqdm(words_in_target_langs, desc='Finding link candidates', total=len(words_in_target_langs)):
+        #     for common_neighbor in self.word_graph.neighbors(word_1):
+        #         for word_2 in self.word_graph.neighbors(common_neighbor):
+        #             if word_1 != word_2 \
+        #                     and word_2.iso_language in self.target_langs \
+        #                     and word_1.iso_language != word_2.iso_language \
+        #                     and (word_2, word_1) not in link_candidates:
+        #                 link_candidates.add((word_1, word_2))
+        # return list(link_candidates)
+
+        # find all neighboring nodes in the word graph
+        link_candidates = set()
+        words_in_target_langs = [word for lang in self.target_langs
+                                 for word in self.words_by_text_by_lang[lang].values()]
+        for word_1 in tqdm(words_in_target_langs, desc='Finding link candidates', total=len(words_in_target_langs)):
+            for word_2 in self.word_graph.neighbors(word_1):
+                if word_1 != word_2 \
+                        and word_2.iso_language in self.target_langs \
+                        and word_1.iso_language != word_2.iso_language \
+                        and (word_2, word_1) not in link_candidates:
+                    link_candidates.add((word_1, word_2))
+        return list(link_candidates)
+
+    @staticmethod
+    def _apply_prediction(graph, func, ebunch=None):
+        """Applies the given function to each edge in the specified iterable
+        of edges.
+        """
+        if ebunch is None:
+            ebunch = nx.non_edges(graph)
+        return ((u, v, func(u, v)) for u, v in ebunch)
+
+    @staticmethod
+    def _weighted_resource_allocation_index(graph, ebunch=None):
+        r"""Compute the weighted resource allocation index of all node pairs in ebunch.
+
+        References
+        ----------
+        .. TODO [1] T. Zhou, L. Lu, Y.-C. Zhang.
+           Predicting missing links via local information.
+           Eur. Phys. J. B 71 (2009) 623.
+           https://arxiv.org/pdf/0901.0553.pdf
+        """
+
+        def predict(u, v):
+            return sum((graph.get_edge_data(u, w)['weight'] + graph.get_edge_data(w, v)['weight'])
+                       / graph.degree(w, weight='weight')
+                       for w in nx.common_neighbors(graph, u, v))
+
+        return DictionaryCreator._apply_prediction(graph, predict, ebunch)
+
+    def _compute_link_score(self, word_1, word_2):
+        # TODO: Does it make sense to compute 2 link scores for both directions?
+        # divide edge weight by the average sum of edge weights to words of the other language
+        lang_1 = word_1.iso_language
+        lang_2 = word_2.iso_language
+
+        # get sum of weights from word_1 to lang_2 words in neighbors of word_1
+        sum_weights_1_to_2 = sum(self.word_graph.get_edge_data(word_1, w)['weight']
+                                 for w in self.word_graph.neighbors(word_1)
+                                 if w.iso_language == lang_2)
+
+        # get sum of weights from word_2 to lang_1 words in neighbors of word_2
+        sum_weights_2_to_1 = sum(self.word_graph.get_edge_data(word_2, w)['weight']
+                                 for w in self.word_graph.neighbors(word_2)
+                                 if w.iso_language == lang_1)
+
+        edge_weight = self.word_graph.get_edge_data(word_1, word_2)['weight']
+        avg_weights_sum = (sum_weights_1_to_2 + sum_weights_2_to_1) / 2
+        return edge_weight / avg_weights_sum
+
+    def predict_links(self, load=False, save=False):
         if load:
             self._load_state()
 
-        preds = nx.jaccard_coefficient(self.word_graph)
-        # preds = nx.adamic_adar_index(self.word_graph)
-        # preds = nx.resource_allocation_index(self.word_graph)
-        max_score = 0
-        for u, v, p in preds:
-            if u.iso_language in self.target_langs and v.iso_language in self.target_langs and p and p >= max_score:
-                max_score = p
-                print(f"({u}, {v}) -> {p:.3f}")
+        link_candidates = [
+            (self.words_by_text_by_lang['fra']['eau'],
+             self.words_by_text_by_lang['deu']['wasser']),
+            (self.words_by_text_by_lang['eng']['water'],
+             self.words_by_text_by_lang['deu']['wasser']),
+            (self.words_by_text_by_lang['eng']['water'],
+             self.words_by_text_by_lang['fra']['eau']),
 
-    def _build_top_tfidfs(self):
-        self._initialize_if_none(self.top_tfidfs_by_qid_by_lang, defaultdict(dict))
+            (self.words_by_text_by_lang['fra']['boire'],
+             self.words_by_text_by_lang['deu']['trinken']),
+            (self.words_by_text_by_lang['eng']['drink'],
+             self.words_by_text_by_lang['deu']['trinken']),
+            (self.words_by_text_by_lang['eng']['drink'],
+             self.words_by_text_by_lang['fra']['boire']),
+        ]
+        # link_candidates = self._find_link_candidates()
+
+        # preds = nx.jaccard_coefficient(self.word_graph)
+        # preds = nx.adamic_adar_index(self.word_graph)
+        # preds = self._weighted_resource_allocation_index(self.word_graph, link_candidates)
+
+        link_scores_by_lang = {}
+        score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
+        # for u, v, link_score in tqdm(preds, desc='Predicting links', total=len(link_candidates)):
+        for word_1, word_2 in tqdm(link_candidates, desc='Predicting links', total=len(link_candidates)):
+            link_score = self._compute_link_score(word_1, word_2)
+            if link_score < 0.5:
+                continue
+            edge = self.word_graph.get_edge_data(word_1, word_2)
+            weight = edge['weight'] if edge is not None else 0
+            print(f'({word_1}, {word_2}, {weight}) -> {link_score:.3f}')
+
+            # TODO: refactor this (duplicated)
+            lang_1 = word_1.iso_language
+            lang_2 = word_2.iso_language
+            wtxt_1 = word_1.text
+            wtxt_2 = word_2.text
+
+            # add qids
+            new_qids_1 = self.words_by_text_by_lang[lang_1][wtxt_1].qids
+            for new_qid_1 in new_qids_1:
+                score_by_wtxt_by_qid_by_lang[lang_2][new_qid_1][wtxt_2] = link_score
+
+            if lang_1 == lang_2 and wtxt_1 == wtxt_2:
+                continue
+
+            # add qids in opposite direction
+            new_qids_2 = self.words_by_text_by_lang[lang_2][wtxt_2].qids
+            for new_qid_2 in new_qids_2:
+                score_by_wtxt_by_qid_by_lang[lang_1][new_qid_2][wtxt_1] = link_score
+
+        self._initialize_if_none(self.top_scores_by_qid_by_lang, defaultdict(dict))
 
         for target_lang in self.target_langs:
-            if target_lang in self.top_tfidfs_by_qid_by_lang:
+            if target_lang in self.top_scores_by_qid_by_lang:
+                print(f'Skipped: top {target_lang} scores already collected')
+                continue
+
+            score_by_wtxt_by_qid = score_by_wtxt_by_qid_by_lang[target_lang]
+            for qid, score_by_wtxt in tqdm(score_by_wtxt_by_qid.items(), desc=f'Collecting top {target_lang} scores',
+                                           total=len(score_by_wtxt_by_qid)):
+                score_by_wtxt = sorted(score_by_wtxt.items(), key=lambda x: x[1], reverse=True)
+                # df = df[df['TF-IDF'] > 0]
+                self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
+
+        if save:
+            self._save_state()
+
+    def _build_top_tfidfs(self):
+        self._initialize_if_none(self.top_scores_by_qid_by_lang, defaultdict(dict))
+
+        for target_lang in self.target_langs:
+            if target_lang in self.top_scores_by_qid_by_lang:
                 print(f'Skipped: top {target_lang} tfidfs already collected')
                 continue
 
@@ -457,19 +591,19 @@ class DictionaryCreator(object):
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)
                 df = df[df['TF-IDF'] > 0]
-                self.top_tfidfs_by_qid_by_lang[target_lang][qid] = df.head(20)
+                self.top_scores_by_qid_by_lang[target_lang][qid] = df.head(20)
 
     def train_tfidf_based_model(self, load=False, save=False):
         if load:
             self._load_state()
         self._build_top_tfidfs()
 
-        # build self.top_qids_by_wtxt_by_lang
-        self._initialize_if_none(self.top_qids_by_wtxt_by_lang, defaultdict(lambda: defaultdict(list)))
-        for target_lang in self.target_langs:
-            for qid, tfidfs_df in self.top_tfidfs_by_qid_by_lang[target_lang].items():
-                for wtxt, tfidf in zip(list(tfidfs_df.index.values), list(tfidfs_df['TF-IDF'])):
-                    self.top_qids_by_wtxt_by_lang[target_lang][wtxt].append((qid, tfidf))
+        # # build self.top_qids_by_wtxt_by_lang
+        # self._initialize_if_none(self.top_qids_by_wtxt_by_lang, defaultdict(lambda: defaultdict(list)))
+        # for target_lang in self.target_langs:
+        #     for qid, tfidfs_df in self.top_scores_by_qid_by_lang[target_lang].items():
+        #         for wtxt, tfidf in zip(list(tfidfs_df.index.values), list(tfidfs_df['TF-IDF'])):
+        #             self.top_qids_by_wtxt_by_lang[target_lang][wtxt].append((qid, tfidf))
 
         if save:
             self._save_state()
@@ -479,7 +613,7 @@ class DictionaryCreator(object):
         threshold = 0.15
         filtered_target_wtxts_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
-            for qid, tfidfs_df in self.top_tfidfs_by_qid_by_lang[target_lang].items():
+            for qid, tfidfs_df in self.top_scores_by_qid_by_lang[target_lang].items():
                 filtered_target_wtxts_by_qid_by_lang[target_lang][qid] = list(
                     tfidfs_df[tfidfs_df['TF-IDF'] > threshold].index.values)
         return filtered_target_wtxts_by_qid_by_lang
@@ -618,14 +752,14 @@ class DictionaryCreator(object):
                 continue
             target_wtxts = target_wtxts[0]
             for qid in source_wtxt.qids:
-                if qid in self.top_tfidfs_by_qid_by_lang[target_lang]:
+                if qid in self.top_scores_by_qid_by_lang[target_lang]:
                     target_qids[qid].extend(target_wtxts)
                 # some semantic domains are missing in the target sds because no aligned wtxts were found
 
-        # in all selected target top_tfidfs, look for first ranked target wtxt that also appears in df_test (gt data)
+        # in all selected target top_scores, look for first ranked target wtxt that also appears in df_test (gt data)
         mean_reciprocal_rank = 0
         for qid, target_wtxts in target_qids.items():
-            wtxt_list = list(self.top_tfidfs_by_qid_by_lang[target_lang][qid].index)
+            wtxt_list = list(self.top_scores_by_qid_by_lang[target_lang][qid].index)
             reciprocal_rank = 0
             for idx, wtxt in enumerate(wtxt_list):
                 if wtxt in target_wtxts:
@@ -640,7 +774,7 @@ class DictionaryCreator(object):
             mean_reciprocal_rank += reciprocal_rank
         mean_reciprocal_rank /= len(target_qids)
         print(
-            f'{len(target_qids)} / {len(self.top_tfidfs_by_qid_by_lang[target_lang])} {target_lang} questions selected')
+            f'{len(target_qids)} / {len(self.top_scores_by_qid_by_lang[target_lang])} {target_lang} questions selected')
         print(f'MRR: {mean_reciprocal_rank:.3f}')
 
     def evaluate(self, load=False, print_reciprocal_ranks=False):
@@ -668,11 +802,11 @@ if __name__ == '__main__':
         # 'bid-urd',
         'bid-deu',
         # 'bid-rus',
-        'bid-vie',
+        # 'bid-vie',
     ])
-    dc.preprocess_data(load=True, save=True)
-    dc.map_target_words_to_qids(load=True, save=True)
-    dc.plot_graph(load=True, lang='deu', text='perle', min_count=1)
-    # dc.predict_links(load=True)
+    # dc.preprocess_data(load=True, save=True)
+    # dc.map_target_words_to_qids(load=True, save=True)
+    dc.plot_graph(load=True, save=True, lang='eng', text='go', min_count=4)
+    dc.predict_links(load=True, save=False)
     # dc.train_tfidf_based_model(load=True, save=True)
-    # dc.evaluate(load=True, print_reciprocal_ranks=False)
+    dc.evaluate(load=True, print_reciprocal_ranks=False)
