@@ -1,4 +1,4 @@
-eval base_path="~/repos/mt/experiments"
+eval base_path="~/repos/mt/dictionary_creator"
 
 echo "[INFO] ${base_path}/fast_align/build/fast_align -i ${base_path}/data/$1-$2.txt -d -o -v > ${base_path}/data/forward_[$1]_[$2].align"
 ${base_path}/fast_align/build/fast_align -i ${base_path}/data/$1-$2.txt -d -o -v > ${base_path}/data/forward_[$1]_[$2].align
