@@ -334,10 +334,7 @@ class DictionaryCreator(object):
         self.changed_variables.add('words_by_text_by_lang')
 
     def _map_word_to_qid(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None, score_by_wtxt_by_qid_by_lang=None):
-        # add alignment edge and qids
-        self._add_directed_edge(wtxt_1, wtxt_2, lang_1, lang_2)
-        new_qids_1 = self.words_by_text_by_lang[lang_1][wtxt_1].qids
-        for new_qid_1 in new_qids_1:
+        for new_qid_1 in self.words_by_text_by_lang[lang_1][wtxt_1].qids:
             if link_score is None:
                 self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][lang_1][new_qid_1] += ', ' + wtxt_2
                 self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
@@ -373,7 +370,11 @@ class DictionaryCreator(object):
 
             for aligned_wtxt_pair in aligned_wtxt_pairs:
                 wtxt_1_idx, wtxt_2_idx = [int(num) for num in aligned_wtxt_pair.split('-')]
-                self._map_word_to_qid_bidirectionally(wtxts_1[wtxt_1_idx], wtxts_2[wtxt_2_idx], lang_1, lang_2)
+                wtxt_1 = wtxts_1[wtxt_1_idx]
+                wtxt_2 = wtxts_2[wtxt_2_idx]
+                self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
+                self._add_directed_edge(wtxt_1, wtxt_2, lang_1, lang_2)
+                self._add_directed_edge(wtxt_2, wtxt_1, lang_2, lang_1)
 
     def map_words_to_qids(self, load=False, save=False):
         # map words in all target language bibles to semantic domains
@@ -441,16 +442,27 @@ class DictionaryCreator(object):
         # define filtered subgraph of neighbors of neighbors of node
         node = self.words_by_text_by_lang[lang][text]
         selected_nodes = {node}
+        neighbors_1st_order = set()
+        neighbors_2nd_order = set()
+        neighbors_3rd_order = set()
         for neighbor_1st_order in filtered_word_graph.neighbors(node):
-            selected_nodes.add(neighbor_1st_order)
+            neighbors_1st_order.add(neighbor_1st_order)
             for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
                 if self._compute_link_score(neighbor_1st_order, neighbor_2nd_order) < self.score_threshold:
                     continue
-                selected_nodes.add(neighbor_2nd_order)
+                neighbors_2nd_order.add(neighbor_2nd_order)
                 for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):
                     if self._compute_link_score(neighbor_2nd_order, neighbor_3rd_order) < self.score_threshold:
                         continue
-                    selected_nodes.add(neighbor_3rd_order)
+                    neighbors_3rd_order.add(neighbor_3rd_order)
+        # avoid that graph gets too large or messy for plotting
+        max_nodes = 100
+        if len(selected_nodes) + len(neighbors_1st_order) <= max_nodes:
+            selected_nodes.update(neighbors_1st_order)
+        if len(selected_nodes) + len(neighbors_2nd_order) <= max_nodes:
+            selected_nodes.update(neighbors_2nd_order)
+        if len(selected_nodes) + len(neighbors_3rd_order) <= max_nodes:
+            selected_nodes.update(neighbors_3rd_order)
         G = filtered_word_graph.subgraph(selected_nodes)
 
         # set figure size heuristically
@@ -878,6 +890,6 @@ if __name__ == '__main__':
     # dc.map_words_to_qids(load=load, save=save)
     dc.build_word_graph(load=load, save=save)
     dc.predict_links(load=load, save=save)
-    dc.plot_subgraph(lang='eng', text='vineyard', min_count=1)
+    dc.plot_subgraph(lang='eng', text='water', min_count=4)
     # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
