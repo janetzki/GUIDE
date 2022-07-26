@@ -19,6 +19,9 @@ from tqdm import tqdm
 
 
 class DictionaryCreator(object):
+    # https://gist.github.com/sebleier/554280#file-nltk-s-list-of-english-stopwords
+    english_stop_words = ["i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your", "yours", "yourself", "yourselves", "he", "him", "his", "himself", "she", "her", "hers", "herself", "it", "its", "itself", "they", "them", "their", "theirs", "themselves", "what", "which", "who", "whom", "this", "that", "these", "those", "am", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "having", "do", "does", "did", "doing", "a", "an", "the", "and", "but", "if", "or", "because", "as", "until", "while", "of", "at", "by", "for", "with", "about", "against", "between", "into", "through", "during", "before", "after", "above", "below", "to", "from", "up", "down", "in", "out", "on", "off", "over", "under", "again", "further", "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now"]
+
     class Word:
         def __init__(self, text, lang, qids=None, appears_in_bible=False):
             self.text = text
@@ -52,6 +55,9 @@ class DictionaryCreator(object):
         self.words_by_text_by_lang = defaultdict(dict)
         self.question_by_qid_by_lang = defaultdict(dict)
         self.wtxts_by_verse_by_bid = {}
+
+        # Not saved data (preprocessing)
+        self.stop_words_by_lang = {}
 
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
@@ -311,6 +317,34 @@ class DictionaryCreator(object):
 
                 print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2]))
 
+    def _find_stop_words(self):
+        for lang in tqdm(self.words_by_text_by_lang.keys(), desc='Finding stop words', total=len(self.words_by_text_by_lang)):
+            if lang in self.stop_words_by_lang:
+                print(f'Skipped: Stop words for {lang} already found')
+                continue
+
+            words = Counter()
+            # for each bible in this language
+            for bid in [bid for bid in self.bids if self._convert_bid_to_lang(bid) == lang]:
+                for verse in self.wtxts_by_verse_by_bid[bid]:
+                    words.update(verse)
+
+            # find most common words
+            stop_words = words.most_common(10)
+            stop_words = [wtxt for wtxt, count in stop_words]
+            self.stop_words_by_lang[lang] = stop_words
+            self.changed_variables.add('stop_words_by_lang')
+
+    def _remove_stop_words(self):
+        for lang in tqdm(self.words_by_text_by_lang.keys(),
+                         desc='Removing stop words',
+                         total=len(self.words_by_text_by_lang)):
+            words_by_text = self.words_by_text_by_lang[lang]
+            words_by_text = {wtxt: word for wtxt, word in words_by_text.items() if
+                             wtxt not in self.stop_words_by_lang[lang]}
+            self.words_by_text_by_lang[lang] = words_by_text
+            self.changed_variables.add('words_by_text_by_lang')
+
     def preprocess_data(self, load=False, save=False):
         if load:
             self._load_state()
@@ -318,6 +352,8 @@ class DictionaryCreator(object):
         self._build_sds()
         self._tokenize_verses()
         self._combine_alignments()
+        self._find_stop_words()
+        self._remove_stop_words()
         if save:
             self._save_state()
 
@@ -366,6 +402,8 @@ class DictionaryCreator(object):
                 wtxt_1_idx, wtxt_2_idx = [int(num) for num in aligned_wtxt_pair.split('-')]
                 wtxt_1 = wtxts_1[wtxt_1_idx]
                 wtxt_2 = wtxts_2[wtxt_2_idx]
+                if wtxt_1 in self.stop_words_by_lang[lang_1] or wtxt_2 in self.stop_words_by_lang[lang_2]:
+                    continue  # ignore stop words
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
                 self._add_directed_edge(wtxt_1, wtxt_2, lang_1, lang_2)
                 self._add_directed_edge(wtxt_2, wtxt_1, lang_2, lang_1)
@@ -403,6 +441,8 @@ class DictionaryCreator(object):
                     lang_2, wtxt_2 = word_2_str.split(': ')
                     if lang_2 not in self.target_langs:  # hacky
                         continue
+                    if wtxt_2 not in self.words_by_text_by_lang[lang_2]:
+                        continue  # wtxt_2 has been removed as a stop word
                     word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                     weighted_edges.append([word_1, word_2, count])
 
@@ -557,21 +597,21 @@ class DictionaryCreator(object):
         if load:
             self._load_state()
 
-        link_candidates = [
-            (self.words_by_text_by_lang['fra']['eau'],
-             self.words_by_text_by_lang['deu']['wasser']),
-            (self.words_by_text_by_lang['eng']['water'],
-             self.words_by_text_by_lang['deu']['wasser']),
-            (self.words_by_text_by_lang['eng']['water'],
-             self.words_by_text_by_lang['fra']['eau']),
-
-            (self.words_by_text_by_lang['fra']['boire'],
-             self.words_by_text_by_lang['deu']['trinken']),
-            (self.words_by_text_by_lang['eng']['drink'],
-             self.words_by_text_by_lang['deu']['trinken']),
-            (self.words_by_text_by_lang['eng']['drink'],
-             self.words_by_text_by_lang['fra']['boire']),
-        ]
+        # link_candidates = [
+        #     (self.words_by_text_by_lang['fra']['eau'],
+        #      self.words_by_text_by_lang['deu']['wasser']),
+        #     (self.words_by_text_by_lang['eng']['water'],
+        #      self.words_by_text_by_lang['deu']['wasser']),
+        #     (self.words_by_text_by_lang['eng']['water'],
+        #      self.words_by_text_by_lang['fra']['eau']),
+        #
+        #     (self.words_by_text_by_lang['fra']['boire'],
+        #      self.words_by_text_by_lang['deu']['trinken']),
+        #     (self.words_by_text_by_lang['eng']['drink'],
+        #      self.words_by_text_by_lang['deu']['trinken']),
+        #     (self.words_by_text_by_lang['eng']['drink'],
+        #      self.words_by_text_by_lang['fra']['boire']),
+        # ]
         link_candidates = self._find_link_candidates()
 
         # preds = nx.jaccard_coefficient(self.word_graph)
@@ -864,11 +904,11 @@ if __name__ == '__main__':
     }, score_threshold=0.2)
 
     load = False
-    save = True
+    save = False
     dc.preprocess_data(load=load, save=save)
     dc.map_words_to_qids(load=load, save=save)
-    # dc.build_word_graph(load=load, save=save)
-    # dc.predict_links(load=load, save=save)
-    # dc.plot_subgraph(lang='eng', text='water', min_count=4)
-    dc.train_tfidf_based_model(load=load, save=save)
+    dc.build_word_graph(load=load, save=save)
+    dc.predict_links(load=load, save=save)
+    dc.plot_subgraph(lang='eng', text='water', min_count=4)
+    #dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
