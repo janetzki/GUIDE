@@ -11,11 +11,8 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 from polyglot.text import Text
 from sklearn.feature_extraction.text import TfidfVectorizer
-from tokenizers import Tokenizer
-from tokenizers.models import BPE
-from tokenizers.pre_tokenizers import Whitespace
-from tokenizers.trainers import BpeTrainer
 from tqdm import tqdm
+from utoken import utokenize
 
 
 class DictionaryCreator(object):
@@ -39,9 +36,11 @@ class DictionaryCreator(object):
         self.source_bid = self.bids[0]
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
-        self.all_langs = sorted(['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie'])
+        self.all_langs = sorted(
+            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
         self.data_path = 'data'
         self.state_files_path = os.path.join(self.data_path, '0_state')
+        self.tokenizer = 'utoken'  # 'bpe'
         self.vectorizer = TfidfVectorizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
@@ -187,7 +186,7 @@ class DictionaryCreator(object):
                     #     variable = load_file(variable)
 
         self.top_scores_by_qid_by_lang = defaultdict(
-            dict)  # uncomment this to switch between computing link scores and tf-idf scores
+            dict)  # activate this to switch between computing link scores and tf-idf scores
         self.state_loaded = True
         print('State loaded.')
 
@@ -208,7 +207,7 @@ class DictionaryCreator(object):
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
-                assert (lang in ('deu', 'rus', 'vie'))
+                assert (lang in ('deu', 'rus', 'vie', 'tpi'))
             self.changed_variables.add('sds_by_lang')
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
@@ -257,23 +256,29 @@ class DictionaryCreator(object):
                 print(f'Skipped: Bible {bid} already tokenized')
                 continue
 
-            file = os.path.join(
-                '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
-            tokenizer = Tokenizer(BPE())
-            tokenizer.pre_tokenizer = Whitespace()
-            trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words) possible solution: use pre-defined word list for English
-            tokenizer.train(files=[file], trainer=trainer)
+            assert (self.tokenizer == 'utoken')
+
+            # file = os.path.join(
+            #     '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
+            # tokenizer = Tokenizer(BPE())
+            # tokenizer.pre_tokenizer = Whitespace()
+            # trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words) possible solution: use pre-defined word list for English
+            # tokenizer.train(files=[file], trainer=trainer)
+
+            lang = self._convert_bid_to_lang(bid)
+            tokenizer = utokenize.Tokenizer(lang_code=lang)
 
             # tokenize all verses
-            wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
-            # lowercase all wtxts
+            # wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
+            # filter removes empty strings ('')
+            wtxts_by_verse = [list(filter(len, tokenizer.utokenize_string(verse).split(' '))) for verse in
+                              self.verses_by_bid[bid]]
             wtxts_by_verse = [[wtxt.lower() for wtxt in verse] for verse in wtxts_by_verse]
 
             self.wtxts_by_verse_by_bid[bid] = wtxts_by_verse.copy()
             self.changed_variables.add('wtxts_by_verse_by_bid')
 
             # mark words as appearing in the bible
-            lang = self._convert_bid_to_lang(bid)
             wtxts_set = set([wtxt for wtxts in wtxts_by_verse for wtxt in wtxts])
             for wtxt in wtxts_set:
                 if wtxt in self.words_by_text_by_lang[lang]:
@@ -290,26 +295,29 @@ class DictionaryCreator(object):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
 
-                aligned_bibles_file_path = f'{self.data_path}/diag_[{bid_1}]_[{bid_2}].align'
+                aligned_bibles_file_path = f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align'
                 if os.path.isfile(aligned_bibles_file_path):
                     print(f'Skipped: Aligned bibles file {aligned_bibles_file_path} already exists')
                     continue
 
-                combined_bibles_file_path = f'{self.data_path}/{bid_1}-{bid_2}.txt'
+                combined_bibles_file_path = f'{self.data_path}/{bid_1}_{bid_2}_{self.tokenizer}.txt'
                 with open(combined_bibles_file_path, 'w') as combined_bibles:
                     for idx, (bid_1_wtxts, bid_2_wtxts) in tqdm(enumerate(
                             zip(self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2])),
                             desc=f'Combining alignments for {bid_1} and {bid_2}',
                             total=len(self.wtxts_by_verse_by_bid[bid_1])):
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0 and len(bid_1_wtxts) + len(bid_2_wtxts) > 0:
-                            # print(idx)  # verse is missing in one bible
+                            # verse is missing in only one bible
+                            print('Missing verse - verses might be misaligned!', idx, bid_1_wtxts, bid_2_wtxts)
                             pass
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0:
+                            # verse is missing in both bibles
                             bid_1_wtxts = ['#placeholder#']
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
 
-                print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2]))
+                suffix = self.tokenizer
+                print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2, suffix]))
 
     def preprocess_data(self, load=False, save=False):
         if load:
@@ -380,7 +388,7 @@ class DictionaryCreator(object):
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
-                with open(f'{self.data_path}/diag_[{bid_1}]_[{bid_2}].align', 'r') as alignment_file:
+                with open(f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align', 'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
@@ -557,21 +565,21 @@ class DictionaryCreator(object):
         if load:
             self._load_state()
 
-        link_candidates = [
-            (self.words_by_text_by_lang['fra']['eau'],
-             self.words_by_text_by_lang['deu']['wasser']),
-            (self.words_by_text_by_lang['eng']['water'],
-             self.words_by_text_by_lang['deu']['wasser']),
-            (self.words_by_text_by_lang['eng']['water'],
-             self.words_by_text_by_lang['fra']['eau']),
-
-            (self.words_by_text_by_lang['fra']['boire'],
-             self.words_by_text_by_lang['deu']['trinken']),
-            (self.words_by_text_by_lang['eng']['drink'],
-             self.words_by_text_by_lang['deu']['trinken']),
-            (self.words_by_text_by_lang['eng']['drink'],
-             self.words_by_text_by_lang['fra']['boire']),
-        ]
+        # link_candidates = [
+        #     (self.words_by_text_by_lang['fra']['eau'],
+        #      self.words_by_text_by_lang['deu']['wasser']),
+        #     (self.words_by_text_by_lang['eng']['water'],
+        #      self.words_by_text_by_lang['deu']['wasser']),
+        #     (self.words_by_text_by_lang['eng']['water'],
+        #      self.words_by_text_by_lang['fra']['eau']),
+        #
+        #     (self.words_by_text_by_lang['fra']['boire'],
+        #      self.words_by_text_by_lang['deu']['trinken']),
+        #     (self.words_by_text_by_lang['eng']['drink'],
+        #      self.words_by_text_by_lang['deu']['trinken']),
+        #     (self.words_by_text_by_lang['eng']['drink'],
+        #      self.words_by_text_by_lang['fra']['boire']),
+        # ]
         link_candidates = self._find_link_candidates()
 
         # preds = nx.jaccard_coefficient(self.word_graph)
@@ -655,6 +663,8 @@ class DictionaryCreator(object):
                   f'because no ground-truth target semantic domains have been loaded')
             return
 
+        false_positives = []
+        false_negatives = []
         for qid, wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
                                desc=f'Counting true positive words in {target_lang} semantic domains',
                                total=len(predicted_target_wtxts_by_qid),
@@ -662,6 +672,10 @@ class DictionaryCreator(object):
             num_positive_wtxts += len(wtxts)
             for wtxt in wtxts:
                 num_true_positive_wtxts += wtxt in gt_target_wtxts_by_qid.get(qid, [])
+                if wtxt not in gt_target_wtxts_by_qid.get(qid, []):
+                    false_positives.append((wtxt, qid))
+                    false_negatives.append((false_negative, qid) for false_negative in
+                                           set(gt_target_wtxts_by_qid.get(qid, [])) - set(wtxts))
 
         # # How many non-unique wtxts are in the ground-truth target semantic domains?
         # num_total_sd_source_wtxts = 0
@@ -790,7 +804,7 @@ class DictionaryCreator(object):
                     break
             if print_reciprocal_ranks:
                 print(qid)
-                print('\t', self.question_by_qid_by_lang[source_lang][qid])
+                print('\t', self.question_by_qid_by_lang[self.source_lang][qid])
                 print('\t found (positive) words:', wtxt_list)
                 print('\t reference (true) words:', target_wtxts)
                 print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
@@ -850,25 +864,30 @@ if __name__ == '__main__':
         # 'bid-fra-fob': 'fra-fra_fob.txt',
         # 'bid-fra-lsg': 'fra-fraLSG.txt',
 
-        'bid-spa': 'spa-spaRV1909.txt',
+        # 'bid-spa': 'spa-spaRV1909.txt',
         # 'bid-ind': 'ind-ind.txt',
         # 'bid-tel': 'tel-telirv.txt',
-        # 'bid-tha': 'tha-thaKJV.txt',
+        'bid-tha': 'tha-thaKJV.txt',
         # 'bid-hin': 'hin-hinirv.txt',
         # 'bid-nep': 'nep-nepulb.txt',
         # 'bid-urd': 'urd-urdgvu.txt',
 
-        'bid-deu': 'no semdoms available/deu-deuelo.txt',
+        # 'bid-deu': 'no semdoms available/deu-deuelo.txt',
         # 'bid-rus': 'no semdoms available/rus-russyn.txt',,
         # 'bid-vie': 'no semdoms available/vie-vie1934.txt',
+        # 'bid-tpi': 'no semdoms available/tpi-tpipng.txt',
+        # 'bid-swp': 'no semdoms available/swp-swp.txt',
     }, score_threshold=0.2)
 
     load = False
-    save = True
+    save = False
     dc.preprocess_data(load=load, save=save)
     dc.map_words_to_qids(load=load, save=save)
-    # dc.build_word_graph(load=load, save=save)
-    # dc.predict_links(load=load, save=save)
-    # dc.plot_subgraph(lang='eng', text='water', min_count=4)
-    dc.train_tfidf_based_model(load=load, save=save)
+
+    dc.build_word_graph(load=load, save=save)
+    dc.predict_links(load=load, save=save)
+    dc.plot_subgraph(lang='eng', text='river', min_count=1)
+
+    # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
+    dc._save_state()
