@@ -20,12 +20,12 @@ from tqdm import tqdm
 
 class DictionaryCreator(object):
     class Word:
-        def __init__(self, text, lang, qids=None, appears_in_bible=False):
+        def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
             self.text = text
             self.iso_language = lang
             self.aligned_words = Counter()
             self.qids = set() if qids is None else qids
-            self.appears_in_bible = appears_in_bible
+            self.occurrences_in_bible = occurrences_in_bible
 
         def __str__(self):
             return f'{self.iso_language}: {self.text}'
@@ -188,8 +188,7 @@ class DictionaryCreator(object):
                     # else:
                     #     variable = load_file(variable)
 
-        self.top_scores_by_qid_by_lang = defaultdict(
-            dict)  # activate this to switch between computing link scores and tf-idf scores
+        # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between computing link scores and tf-idf scores
         self.state_loaded = True
         print('State loaded.')
 
@@ -278,12 +277,12 @@ class DictionaryCreator(object):
 
             # mark words as appearing in the bible
             lang = self._convert_bid_to_lang(bid)
-            wtxts_set = set([wtxt for wtxts in wtxts_by_verse for wtxt in wtxts])
-            for wtxt in wtxts_set:
+            wtxts = [wtxt for wtxts in wtxts_by_verse for wtxt in wtxts]
+            for wtxt in wtxts:
                 if wtxt in self.words_by_text_by_lang[lang]:
-                    self.words_by_text_by_lang[lang][wtxt].appears_in_bible = True
+                    self.words_by_text_by_lang[lang][wtxt].occurrences_in_bible += 1
                 else:
-                    self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, [], True)
+                    self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, [], 1)
                 self.changed_variables.add('words_by_text_by_lang')
 
     def _combine_alignments(self):
@@ -327,10 +326,10 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def _add_directed_edge(self, wtxt1, wtxt2, lang1, lang2):
-        word1 = self.words_by_text_by_lang[lang1][wtxt1]
-        word2 = self.words_by_text_by_lang[lang2][wtxt2]
-        word1.add_aligned_word(word2)
+    def _add_directed_edge(self, wtxt_1, wtxt_2, lang_1, lang_2):
+        word_1 = self.words_by_text_by_lang[lang_1][wtxt_1]
+        word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
+        word_1.add_aligned_word(word_2)
         self.changed_variables.add('words_by_text_by_lang')
 
     def _map_word_to_qid(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None, score_by_wtxt_by_qid_by_lang=None):
@@ -448,8 +447,10 @@ class DictionaryCreator(object):
         neighbors_3rd_order = set()
         for neighbor_1st_order in filtered_word_graph.neighbors(node):
             neighbors_1st_order.add(neighbor_1st_order)
+            is_predicted_link_1st_order = self._compute_link_score(node, neighbor_1st_order) >= self.score_threshold
             for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
-                if self._compute_link_score(neighbor_1st_order, neighbor_2nd_order) < self.score_threshold:
+                if not is_predicted_link_1st_order and self._compute_link_score(neighbor_1st_order,
+                                                                                neighbor_2nd_order) < self.score_threshold:
                     continue
                 neighbors_2nd_order.add(neighbor_2nd_order)
                 for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):
@@ -457,9 +458,8 @@ class DictionaryCreator(object):
                         continue
                     neighbors_3rd_order.add(neighbor_3rd_order)
         # avoid that graph gets too large or messy for plotting
-        max_nodes = 100
-        if len(selected_nodes) + len(neighbors_1st_order) <= max_nodes:
-            selected_nodes.update(neighbors_1st_order)
+        max_nodes = 50
+        selected_nodes.update(neighbors_1st_order)
         if len(selected_nodes) + len(neighbors_2nd_order) <= max_nodes:
             selected_nodes.update(neighbors_2nd_order)
         if len(selected_nodes) + len(neighbors_3rd_order) <= max_nodes:
@@ -467,7 +467,7 @@ class DictionaryCreator(object):
         G = filtered_word_graph.subgraph(selected_nodes)
 
         # set figure size heuristically
-        width = len(selected_nodes) / 2.5
+        width = max(5, len(selected_nodes) / 2.5)
         plt.figure(figsize=(width, width))
 
         # use a different node color for each language
@@ -663,6 +663,7 @@ class DictionaryCreator(object):
 
         false_positives = []
         false_negatives = []
+        false_negatives_in_verses = []
         for qid, wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
                                desc=f'Counting true positive words in {target_lang} semantic domains',
                                total=len(predicted_target_wtxts_by_qid),
@@ -670,10 +671,35 @@ class DictionaryCreator(object):
             num_positive_wtxts += len(wtxts)
             for wtxt in wtxts:
                 num_true_positive_wtxts += wtxt in gt_target_wtxts_by_qid.get(qid, [])
-                if wtxt not in gt_target_wtxts_by_qid.get(qid, []):
-                    false_positives.append((wtxt, qid))
-                    false_negatives.append((false_negative, qid) for false_negative in
-                                           set(gt_target_wtxts_by_qid.get(qid, [])) - set(wtxts))
+
+            new_false_positives = list(set(wtxts) - set(gt_target_wtxts_by_qid.get(qid, [])))
+            new_false_positives = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible) for wtxt
+                                   in
+                                   new_false_positives]
+            # sort by number of occurrences in bible
+            new_false_positives = sorted(new_false_positives, key=lambda x: x[1], reverse=True)
+            false_positives.append((qid, new_false_positives))
+
+            new_false_negatives = list(set(gt_target_wtxts_by_qid.get(qid, [])) - set(wtxts))
+            false_negatives.append((qid, new_false_negatives))
+            new_false_negatives_in_verses = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible)
+                                             for wtxt in
+                                             new_false_negatives if
+                                             wtxt in self.words_by_text_by_lang[target_lang]
+                                             and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
+            # sort by number of occurrences in verses
+            new_false_negatives_in_verses = sorted(new_false_negatives_in_verses, key=lambda x: x[1], reverse=True)
+            false_negatives_in_verses.append((qid, new_false_negatives_in_verses))
+
+        # sort false matches (by qid) by number of false matches
+        false_positives.sort(key=lambda x: len(x[1]), reverse=True)
+        false_negatives.sort(key=lambda x: len(x[1]), reverse=True)
+        false_negatives_in_verses.sort(key=lambda x: len(x[1]), reverse=True)
+
+        # number of all false matches to facilitate error analysis during debugging
+        num_false_positives = sum([len(x[1]) for x in false_positives])
+        num_false_negatives = sum([len(x[1]) for x in false_negatives])
+        num_false_negatives_in_verses = sum([len(x[1]) for x in false_negatives_in_verses])
 
         # # How many non-unique wtxts are in the ground-truth target semantic domains?
         # num_total_sd_source_wtxts = 0
@@ -697,7 +723,7 @@ class DictionaryCreator(object):
             num_total_gt_target_wtxts += len(wtxts_for_question)
             overlap = [wtxt for wtxt in wtxts_for_question if
                        wtxt in self.words_by_text_by_lang[target_lang]
-                       and self.words_by_text_by_lang[target_lang][wtxt].appears_in_bible]
+                       and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
             num_total_gt_sd_wtxts_in_target_verses += len(overlap)
             # single_wtxts = [wtxt for wtxt in overlap if ' ' not in wtxt]
             # num_total_single_gt_sd_wtxts_in_target_verses += len(single_wtxts)
@@ -859,13 +885,13 @@ if __name__ == '__main__':
         # 'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
         # 'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
 
-        # 'bid-fra-fob': 'fra-fra_fob.txt',
+        'bid-fra-fob': 'fra-fra_fob.txt',
         # 'bid-fra-lsg': 'fra-fraLSG.txt',
 
         # 'bid-spa': 'spa-spaRV1909.txt',
         # 'bid-ind': 'ind-ind.txt',
         # 'bid-tel': 'tel-telirv.txt',
-        'bid-tha': 'tha-thaKJV.txt',
+        # 'bid-tha': 'tha-thaKJV.txt',
         # 'bid-hin': 'hin-hinirv.txt',
         # 'bid-nep': 'nep-nepulb.txt',
         # 'bid-urd': 'urd-urdgvu.txt',
@@ -877,14 +903,15 @@ if __name__ == '__main__':
         # 'bid-swp': 'no semdoms available/swp-swp.txt',
     }, score_threshold=0.2)
 
-    load = False
+    load = True
     save = False
     dc.preprocess_data(load=load, save=save)
     dc.map_words_to_qids(load=load, save=save)
 
-    # dc.build_word_graph(load=load, save=save)
-    # dc.predict_links(load=load, save=save)
-    # dc.plot_subgraph(lang='eng', text='water', min_count=4)
+    dc.build_word_graph(load=load, save=save)
+    dc.predict_links(load=load, save=save)
+    dc.plot_subgraph(lang='eng', text='girdle', min_count=1)
 
-    dc.train_tfidf_based_model(load=load, save=save)
+    # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
+    dc._save_state()
