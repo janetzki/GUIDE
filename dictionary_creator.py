@@ -9,6 +9,10 @@ import networkx as nx
 import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
+from nltk import WordNetLemmatizer, pos_tag
+from nltk.corpus import wordnet
+from nltk.corpus.reader.wordnet import WordNetError
+from nltk.metrics.distance import edit_distance
 from polyglot.text import Text
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tokenizers import Tokenizer
@@ -26,6 +30,7 @@ class DictionaryCreator(object):
             self.aligned_words = Counter()
             self.qids = set() if qids is None else qids
             self.occurrences_in_bible = occurrences_in_bible
+            self.lemmas = []
 
         def __str__(self):
             return f'{self.iso_language}: {self.text}'
@@ -44,6 +49,7 @@ class DictionaryCreator(object):
         self.data_path = 'data'
         self.state_files_path = os.path.join(self.data_path, '0_state')
         self.tokenizer = 'bpe'
+        self.eng_lemmatizer = WordNetLemmatizer()
         self.vectorizer = TfidfVectorizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
@@ -60,6 +66,10 @@ class DictionaryCreator(object):
 
         # Not saved data (plotting)
         self.word_graph = None
+
+        # Saved data (lemmas)
+        self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
+        self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
 
         # Not saved data (predicting links)
         self.strength_by_lang_by_word = defaultdict(lambda: defaultdict(float))
@@ -98,8 +108,7 @@ class DictionaryCreator(object):
             ebunch = nx.non_edges(graph)
         return ((u, v, func(u, v)) for u, v in ebunch)
 
-    @staticmethod
-    def _weighted_resource_allocation_index(graph, ebunch=None):
+    def _weighted_resource_allocation_index(self, ebunch=None):
         r"""Compute the weighted resource allocation index of all node pairs in ebunch.
 
         References
@@ -110,12 +119,14 @@ class DictionaryCreator(object):
            https://arxiv.org/pdf/0901.0553.pdf
         """
 
-        def predict(u, v):
-            return sum((graph.get_edge_data(u, w)['weight'] + graph.get_edge_data(w, v)['weight'])
-                       / graph.degree(w, weight='weight')
-                       for w in nx.common_neighbors(graph, u, v))
+        def predict(word_1, word_2):
+            return sum((self.word_graph.get_edge_data(word_1, common_neighbor)['weight'] +
+                        self.word_graph.get_edge_data(common_neighbor, word_2)['weight'])
+                       / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
+                          self._compute_sum_of_weights(common_neighbor, word_2.iso_language))
+                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2))
 
-        return DictionaryCreator._apply_prediction(graph, predict, ebunch)
+        return DictionaryCreator._apply_prediction(self.word_graph, predict, ebunch)
 
     def _save_state(self):
         print('Saving state...')
@@ -163,6 +174,7 @@ class DictionaryCreator(object):
         # load class variables from separate dill files
         for variable_name in ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang', 'question_by_qid_by_lang',
                               'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang',
+                              'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
                               'top_scores_by_qid_by_lang']:
             variable = getattr(self, variable_name)
             if type(variable) is dict or type(variable) is defaultdict:
@@ -189,6 +201,9 @@ class DictionaryCreator(object):
                     #     variable = load_file(variable)
 
         # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between computing link scores and tf-idf scores
+        # self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
+        # self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
+
         self.state_loaded = True
         print('State loaded.')
 
@@ -239,7 +254,10 @@ class DictionaryCreator(object):
                 answer = row.answer.replace("'", '')
                 answer = answer.replace('"', '')
                 qid = f'{row.cid} {row.question_index}'
-                words = {wtxt: self.Word(wtxt.strip(), lang, [qid]) for wtxt in answer.split(',') if wtxt}
+                wtxts = [wtxt.strip().lower() for wtxt in answer.split(',') if wtxt]
+                if lang == 'eng':
+                    wtxts = self._lemmatize_verse(wtxts)
+                words = {wtxt: self.Word(wtxt.strip(), lang, [qid]) for wtxt in wtxts}
 
                 # add new words to words_by_text_by_lang
                 for word in words.values():
@@ -251,6 +269,30 @@ class DictionaryCreator(object):
 
                 self.question_by_qid_by_lang[lang][qid] = question
                 self.changed_variables.add('question_by_qid_by_lang')
+
+    def _lemmatize_verse(self, verse):
+        # https://stackoverflow.com/a/57686805/8816968
+        lemmatized_wtxts = []
+        pos_labels = pos_tag(verse)
+        for wtxt, pos_label in pos_labels:
+            pos_label = pos_label[0].lower()
+            if pos_label == 'j':
+                pos_label = 'a'  # reassignment
+
+            if pos_label == 'r':  # adverbs
+                try:
+                    pertainyms = wordnet.synset(wtxt + '.r.1').lemmas()[0].pertainyms()
+                    if len(pertainyms):
+                        lemmatized_wtxts.append(pertainyms[0].name())
+                    else:
+                        lemmatized_wtxts.append(wtxt)
+                except WordNetError:
+                    lemmatized_wtxts.append(wtxt)
+            elif pos_label in ['a', 's', 'v']:  # adjectives and verbs
+                lemmatized_wtxts.append(self.eng_lemmatizer.lemmatize(wtxt, pos=pos_label))
+            else:  # nouns and everything else
+                lemmatized_wtxts.append(self.eng_lemmatizer.lemmatize(wtxt))
+        return lemmatized_wtxts
 
     def _tokenize_verses(self):
         for bid in tqdm(self.bids, desc='Tokenizing verses', total=len(self.bids)):
@@ -269,14 +311,19 @@ class DictionaryCreator(object):
             # tokenize all verses
             wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
             wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
+
             # lowercase all wtxts
             wtxts_by_verse = [[wtxt.lower() for wtxt in verse] for verse in wtxts_by_verse]
+
+            # lemmatize all English words
+            lang = self._convert_bid_to_lang(bid)
+            if lang == 'eng':
+                wtxts_by_verse = [self._lemmatize_verse(verse) for verse in wtxts_by_verse]
 
             self.wtxts_by_verse_by_bid[bid] = wtxts_by_verse.copy()
             self.changed_variables.add('wtxts_by_verse_by_bid')
 
             # mark words as appearing in the bible
-            lang = self._convert_bid_to_lang(bid)
             wtxts = [wtxt for wtxts in wtxts_by_verse for wtxt in wtxts]
             for wtxt in wtxts:
                 if wtxt in self.words_by_text_by_lang[lang]:
@@ -382,7 +429,7 @@ class DictionaryCreator(object):
 
         for bid_1 in self.bids:
             for bid_2 in self.bids:
-                if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
+                if bid_1 >= bid_2:  # todo: uncomment: and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
                 with open(f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align', 'r') as alignment_file:
@@ -509,22 +556,24 @@ class DictionaryCreator(object):
 
         plt.show()
 
-    def _find_link_candidates(self):
-        # # find all pairs of nodes in the word graph with a common neighbor
-        # # (relevant if using the weighted resource allocation index)
-        # link_candidates = set()
-        # words_in_target_langs = [word for lang in self.target_langs
-        #                             for word in self.words_by_text_by_lang[lang].values()]
-        # for word_1 in tqdm(words_in_target_langs, desc='Finding link candidates', total=len(words_in_target_langs)):
-        #     for common_neighbor in self.word_graph.neighbors(word_1):
-        #         for word_2 in self.word_graph.neighbors(common_neighbor):
-        #             if word_1 != word_2 \
-        #                     and word_2.iso_language in self.target_langs \
-        #                     and word_1.iso_language != word_2.iso_language \
-        #                     and (word_2, word_1) not in link_candidates:
-        #                 link_candidates.add((word_1, word_2))
-        # return list(link_candidates)
+    def _find_lemma_link_candidates(self):
+        # find all pairs of nodes in the word graph with a common neighbor
+        # (relevant if using the weighted resource allocation index)
+        link_candidates = set()
+        words_in_target_langs = [word for lang in self.target_langs
+                                 for word in self.words_by_text_by_lang[lang].values()]
+        for word_1 in tqdm(words_in_target_langs, desc='Finding link candidates', total=len(words_in_target_langs)):
+            for common_neighbor in self.word_graph.neighbors(word_1):
+                for word_2 in self.word_graph.neighbors(common_neighbor):
+                    if word_1 != word_2 \
+                            and word_2.iso_language in self.target_langs \
+                            and word_1.iso_language == word_2.iso_language \
+                            and (word_2, word_1) not in link_candidates:
+                        # and word_1.text in ('zögerte', 'ögerte', 'zögere'):
+                        link_candidates.add((word_1, word_2))
+        return list(link_candidates)
 
+    def _find_translation_link_candidates(self):
         # find all neighboring nodes in the word graph
         link_candidates = set()
         words_in_target_langs = [word for lang in self.target_langs
@@ -538,10 +587,8 @@ class DictionaryCreator(object):
                     link_candidates.add((word_1, word_2))
         return list(link_candidates)
 
-    def _compute_sum_of_weights(self, word_1, word_2):
+    def _compute_sum_of_weights(self, word_1, lang_2):
         # compute sum of weights from word_1 to lang_2 words in neighbors of word_1
-        lang_2 = word_2.iso_language
-
         # precompute strength sums to improve performance --> store them in cache self.strength_by_lang_by_word
         if lang_2 not in self.strength_by_lang_by_word[word_1]:
             self.strength_by_lang_by_word[word_1][lang_2] = sum(self.word_graph.get_edge_data(word_1, w)['weight']
@@ -552,12 +599,109 @@ class DictionaryCreator(object):
     def _compute_link_score(self, word_1, word_2):
         # normalized edge weight = divide edge weight by the average sum of edge weights to words of the other language
 
-        sum_weights_1_to_2 = self._compute_sum_of_weights(word_1, word_2)
-        sum_weights_2_to_1 = self._compute_sum_of_weights(word_2, word_1)
+        sum_weights_1_to_2 = self._compute_sum_of_weights(word_1, word_2.iso_language)
+        sum_weights_2_to_1 = self._compute_sum_of_weights(word_2, word_1.iso_language)
 
         edge_weight = self.word_graph.get_edge_data(word_1, word_2)['weight']
         avg_weights_sum = (sum_weights_1_to_2 + sum_weights_2_to_1) / 2
         return edge_weight / avg_weights_sum
+
+    def _predict_lemmas(self, load=False, save=False):
+        if load:
+            self._load_state()
+
+        if len(self.base_lemma_by_wtxt_by_lang):
+            print('Skipped predicting lemmas because they were already predicted')
+            assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
+                    len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
+            return
+
+        lemma_link_candidates = self._find_lemma_link_candidates()
+        # preds = nx.jaccard_coefficient(self.word_graph)
+        # preds = nx.adamic_adar_index(self.word_graph)
+        preds = self._weighted_resource_allocation_index(lemma_link_candidates)
+        for word_1, word_2, link_score in tqdm(preds, desc='Predicting lemma links', total=len(lemma_link_candidates)):
+            assert (word_1.iso_language == word_2.iso_language)
+            lang = word_1.iso_language
+            wtxt_1 = word_1.text
+            wtxt_2 = word_2.text
+
+            if link_score < 0.01:
+                continue
+            distance = edit_distance(wtxt_1, wtxt_2)
+            if distance < max(len(wtxt_1), len(wtxt_2)) / 3:
+                # if wtxt_1 in ('abgewandt', 'bricht') or wtxt_2 in ('abgewandt', 'bricht'):
+                #     print(wtxt_1, wtxt_2)
+                # print(lang, distance, wtxt_1, wtxt_2, link_score)
+
+                # find the base lemma, which is the most occurring lemma
+                base_lemma_1 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_1, wtxt_1)
+                base_lemma_2 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_2, wtxt_2)
+                new_base_lemma = wtxt_1
+                words_by_text = self.words_by_text_by_lang[lang]
+
+                if word_1.occurrences_in_bible < word_2.occurrences_in_bible:
+                    new_base_lemma = wtxt_2
+                if words_by_text[new_base_lemma].occurrences_in_bible \
+                        < words_by_text[base_lemma_1].occurrences_in_bible:
+                    new_base_lemma = base_lemma_1
+                if words_by_text[new_base_lemma].occurrences_in_bible \
+                        < words_by_text[base_lemma_2].occurrences_in_bible:
+                    new_base_lemma = base_lemma_2
+
+                # build a group of all lemmas that belong together
+                new_lemma_group = {wtxt_1, wtxt_2} \
+                    .union(self.lemma_group_by_base_lemma_by_lang[lang][base_lemma_1]) \
+                    .union(self.lemma_group_by_base_lemma_by_lang[lang][base_lemma_2])
+
+                # update base lemmas and lemma groups
+                # All lemmas point to the new base lemma. Only the base lemma points to the new lemma group.
+                for wtxt in new_lemma_group:
+                    self.base_lemma_by_wtxt_by_lang[lang][wtxt] = new_base_lemma
+                    if wtxt in self.lemma_group_by_base_lemma_by_lang[lang]:
+                        del self.lemma_group_by_base_lemma_by_lang[lang][wtxt]
+                self.lemma_group_by_base_lemma_by_lang[lang][new_base_lemma] = new_lemma_group
+
+                self.changed_variables.add('base_lemma_by_wtxt_by_lang')
+                self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
+
+        # # collect lemmas that belong together
+        # for lang in self.base_lemma_by_wtxt_by_lang:
+        #     for wtxt, start_base_lemma in self.base_lemma_by_wtxt_by_lang[lang].items():
+        #         # find the final base lemma
+        #         current_base_lemma = start_base_lemma
+        #         while current_base_lemma != self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]:
+        #             current_base_lemma = self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]
+        #         final_base_lemma = current_base_lemma
+        #
+        #         # update base lemmas to the final base lemma
+        #         current_base_lemma = start_base_lemma
+        #         while current_base_lemma != self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]:
+        #             current_base_lemma = self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]
+        #             self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma] = final_base_lemma
+        #
+        #         self.lemma_group_by_base_lemma_by_lang[lang][final_base_lemma].add(wtxt)
+
+        for lang in self.lemma_group_by_base_lemma_by_lang:
+            # sort self.lemma_group_by_base_lemma_by_lang by key
+            self.lemma_group_by_base_lemma_by_lang[lang] = dict(
+                sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
+        self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
+
+        # validate lemmas
+        for lang in self.lemma_group_by_base_lemma_by_lang:
+            for base_lemma, lemma_group in self.lemma_group_by_base_lemma_by_lang[lang].items():
+                # check that all lemma groups contain at least the base lemma and another lemma
+                assert (base_lemma in lemma_group)
+                assert (len(lemma_group) > 1)
+
+                # check that all lemmas point to the base lemma and that all non-base lemmas store no lemma group
+                for lemma in lemma_group:
+                    assert (self.base_lemma_by_wtxt_by_lang[lang][lemma] == base_lemma)
+                    assert (lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang])
+
+        if save:
+            self._save_state()
 
     def predict_links(self, load=False, save=False):
         if load:
@@ -578,12 +722,7 @@ class DictionaryCreator(object):
         #     (self.words_by_text_by_lang['eng']['drink'],
         #      self.words_by_text_by_lang['fra']['boire']),
         # ]
-        link_candidates = self._find_link_candidates()
-
-        # preds = nx.jaccard_coefficient(self.word_graph)
-        # preds = nx.adamic_adar_index(self.word_graph)
-        # preds = self._weighted_resource_allocation_index(self.word_graph, link_candidates)
-        # for u, v, link_score in tqdm(preds, desc='Predicting links', total=len(link_candidates)):
+        link_candidates = self._find_translation_link_candidates()
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
         for word_1, word_2 in tqdm(link_candidates, desc='Predicting links', total=len(link_candidates)):
@@ -849,6 +988,7 @@ class DictionaryCreator(object):
             self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
 
 
+
 if __name__ == '__main__':
     dc = DictionaryCreator(bibles_by_bid={
         # 'bid-eng-asvbt': 'eng-engasvbt.txt',
@@ -885,7 +1025,7 @@ if __name__ == '__main__':
         # 'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
         # 'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
 
-        'bid-fra-fob': 'fra-fra_fob.txt',
+        # 'bid-fra-fob': 'fra-fra_fob.txt',
         # 'bid-fra-lsg': 'fra-fraLSG.txt',
 
         # 'bid-spa': 'spa-spaRV1909.txt',
@@ -896,7 +1036,7 @@ if __name__ == '__main__':
         # 'bid-nep': 'nep-nepulb.txt',
         # 'bid-urd': 'urd-urdgvu.txt',
 
-        # 'bid-deu': 'no semdoms available/deu-deuelo.txt',
+        'bid-deu': 'no semdoms available/deu-deuelo.txt',
         # 'bid-rus': 'no semdoms available/rus-russyn.txt',,
         # 'bid-vie': 'no semdoms available/vie-vie1934.txt',
         # 'bid-tpi': 'no semdoms available/tpi-tpipng.txt',
@@ -909,8 +1049,10 @@ if __name__ == '__main__':
     dc.map_words_to_qids(load=load, save=save)
 
     dc.build_word_graph(load=load, save=save)
+    dc._predict_lemmas()
+    dc._save_state()
     dc.predict_links(load=load, save=save)
-    dc.plot_subgraph(lang='eng', text='girdle', min_count=1)
+    dc.plot_subgraph(lang='eng', text='create', min_count=1)
 
     # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
