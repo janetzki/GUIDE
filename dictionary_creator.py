@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import subprocess
 from collections import defaultdict, Counter
 
@@ -30,7 +31,6 @@ class DictionaryCreator(object):
             self.aligned_words = Counter()
             self.qids = set() if qids is None else qids
             self.occurrences_in_bible = occurrences_in_bible
-            self.lemmas = []
 
         def __str__(self):
             return f'{self.iso_language}: {self.text}'
@@ -361,7 +361,14 @@ class DictionaryCreator(object):
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
 
-                print(subprocess.call(['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer]))
+                result = subprocess.run(['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer],
+                                        capture_output=True, text=True)
+                # retrieve the 10th (last) occurrence of cross entropy and perplexity
+                cross_entropy = float(re.search(
+                    r'(cross entropy: (.|\n)*){9}cross entropy: (\d+\.\d+)', result.stderr).group(3))
+                perplexity = float(re.search(
+                    r'(perplexity: (.|\n)*){9}perplexity: (\d+\.\d+)', result.stderr).group(3))
+                print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
 
     def preprocess_data(self, load=False, save=False):
         if load:
@@ -401,7 +408,8 @@ class DictionaryCreator(object):
         lang_1 = self._convert_bid_to_lang(bid_1)
         lang_2 = self._convert_bid_to_lang(bid_2)
 
-        if lang_2 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1]:
+        if lang_1 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2] \
+                or lang_2 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1]:
             print(f'Skipped: {bid_1} and {bid_2} already mapped')
             return
 
@@ -429,7 +437,7 @@ class DictionaryCreator(object):
 
         for bid_1 in self.bids:
             for bid_2 in self.bids:
-                if bid_1 >= bid_2:  # todo: uncomment: and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
+                if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
                 with open(f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align', 'r') as alignment_file:
@@ -665,23 +673,6 @@ class DictionaryCreator(object):
                 self.changed_variables.add('base_lemma_by_wtxt_by_lang')
                 self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
 
-        # # collect lemmas that belong together
-        # for lang in self.base_lemma_by_wtxt_by_lang:
-        #     for wtxt, start_base_lemma in self.base_lemma_by_wtxt_by_lang[lang].items():
-        #         # find the final base lemma
-        #         current_base_lemma = start_base_lemma
-        #         while current_base_lemma != self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]:
-        #             current_base_lemma = self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]
-        #         final_base_lemma = current_base_lemma
-        #
-        #         # update base lemmas to the final base lemma
-        #         current_base_lemma = start_base_lemma
-        #         while current_base_lemma != self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]:
-        #             current_base_lemma = self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma]
-        #             self.base_lemma_by_wtxt_by_lang[lang][current_base_lemma] = final_base_lemma
-        #
-        #         self.lemma_group_by_base_lemma_by_lang[lang][final_base_lemma].add(wtxt)
-
         for lang in self.lemma_group_by_base_lemma_by_lang:
             # sort self.lemma_group_by_base_lemma_by_lang by key
             self.lemma_group_by_base_lemma_by_lang[lang] = dict(
@@ -699,6 +690,14 @@ class DictionaryCreator(object):
                 for lemma in lemma_group:
                     assert (self.base_lemma_by_wtxt_by_lang[lang][lemma] == base_lemma)
                     assert (lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang])
+
+        if save:
+            self._save_state()
+
+    def _contract_lemmas(self, load=False, save=False):
+        # merge lemmas in same lemma groups together into a single node
+        if load:
+            self._load_state()
 
         if save:
             self._save_state()
@@ -813,8 +812,7 @@ class DictionaryCreator(object):
 
             new_false_positives = list(set(wtxts) - set(gt_target_wtxts_by_qid.get(qid, [])))
             new_false_positives = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible) for wtxt
-                                   in
-                                   new_false_positives]
+                                   in new_false_positives]
             # sort by number of occurrences in bible
             new_false_positives = sorted(new_false_positives, key=lambda x: x[1], reverse=True)
             false_positives.append((qid, new_false_positives))
@@ -822,9 +820,8 @@ class DictionaryCreator(object):
             new_false_negatives = list(set(gt_target_wtxts_by_qid.get(qid, [])) - set(wtxts))
             false_negatives.append((qid, new_false_negatives))
             new_false_negatives_in_verses = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible)
-                                             for wtxt in
-                                             new_false_negatives if
-                                             wtxt in self.words_by_text_by_lang[target_lang]
+                                             for wtxt in new_false_negatives
+                                             if wtxt in self.words_by_text_by_lang[target_lang]
                                              and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
             # sort by number of occurrences in verses
             new_false_negatives_in_verses = sorted(new_false_negatives_in_verses, key=lambda x: x[1], reverse=True)
@@ -988,7 +985,6 @@ class DictionaryCreator(object):
             self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
 
 
-
 if __name__ == '__main__':
     dc = DictionaryCreator(bibles_by_bid={
         # 'bid-eng-asvbt': 'eng-engasvbt.txt',
@@ -1024,6 +1020,7 @@ if __name__ == '__main__':
         # 'bid-eng-ylt': 'eng-engylt.txt',
         # 'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
         # 'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
+        # 'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
 
         # 'bid-fra-fob': 'fra-fra_fob.txt',
         # 'bid-fra-lsg': 'fra-fraLSG.txt',
@@ -1036,23 +1033,24 @@ if __name__ == '__main__':
         # 'bid-nep': 'nep-nepulb.txt',
         # 'bid-urd': 'urd-urdgvu.txt',
 
-        'bid-deu': 'no semdoms available/deu-deuelo.txt',
+        # 'bid-deu': 'no semdoms available/deu-deuelo.txt',
         # 'bid-rus': 'no semdoms available/rus-russyn.txt',,
         # 'bid-vie': 'no semdoms available/vie-vie1934.txt',
-        # 'bid-tpi': 'no semdoms available/tpi-tpipng.txt',
+        'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
         # 'bid-swp': 'no semdoms available/swp-swp.txt',
     }, score_threshold=0.2)
 
-    load = True
+    load = False
     save = False
     dc.preprocess_data(load=load, save=save)
     dc.map_words_to_qids(load=load, save=save)
 
     dc.build_word_graph(load=load, save=save)
-    dc._predict_lemmas()
+    dc._predict_lemmas(load=load, save=save)
+    dc._contract_lemmas(load=load, save=save)
     dc._save_state()
     dc.predict_links(load=load, save=save)
-    dc.plot_subgraph(lang='eng', text='create', min_count=1)
+    dc.plot_subgraph(lang='eng', text='river', min_count=1)
 
     # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
