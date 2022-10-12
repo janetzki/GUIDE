@@ -28,15 +28,33 @@ class DictionaryCreator(object):
         def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
             self.text = text
             self.iso_language = lang
-            self.aligned_words = Counter()
             self.qids = set() if qids is None else qids
             self.occurrences_in_bible = occurrences_in_bible
+            self.display_text = text
+            self._aligned_words = Counter()
 
         def __str__(self):
             return f'{self.iso_language}: {self.text}'
 
-        def add_aligned_word(self, word):
-            self.aligned_words[str(word)] += 1
+        def get_aligned_words_and_counts(self, words_by_text_by_lang):
+            for word_str, count in self._aligned_words.items():
+                lang, wtxt = word_str.split(': ')
+                word = words_by_text_by_lang[lang][wtxt]
+                yield word, count
+
+        def add_aligned_word(self, word, count=1):
+            self._aligned_words[str(word)] += count
+
+        def remove_alignment(self, word):
+            del self._aligned_words[str(word)]
+
+        def merge_words(self, words):
+            for word in words:
+                self.qids.update(
+                    word.qids)  # todo: weight qids by occurrences in bible when adding semdoms as nodes to graph
+                self.occurrences_in_bible += word.occurrences_in_bible
+                self._aligned_words += word._aligned_words
+            self.display_text = f'{self.text.upper()} ({len(words) + 1})'
 
     def __init__(self, bibles_by_bid, score_threshold=0.5):
         self.bibles_by_bid = bibles_by_bid
@@ -82,7 +100,6 @@ class DictionaryCreator(object):
 
     @staticmethod
     def _convert_bid_to_lang(bid):
-        # example: bid-eng-kjv -> eng
         return bid[4:7]
 
     @staticmethod
@@ -96,8 +113,8 @@ class DictionaryCreator(object):
     @staticmethod
     def _transliterate_word(word):
         if word.iso_language == 'hin':
-            return ' '.join(Text(word.text, word.iso_language).transliterate('en'))
-        return word.text
+            return ' '.join(Text(word.display_text, word.iso_language).transliterate('en'))
+        return word.display_text
 
     @staticmethod
     def _apply_prediction(graph, func, ebunch=None):
@@ -257,14 +274,14 @@ class DictionaryCreator(object):
                 wtxts = [wtxt.strip().lower() for wtxt in answer.split(',') if wtxt]
                 if lang == 'eng':
                     wtxts = self._lemmatize_verse(wtxts)
-                words = {wtxt: self.Word(wtxt.strip(), lang, [qid]) for wtxt in wtxts}
+                words = {wtxt: self.Word(wtxt.strip(), lang, {qid}) for wtxt in wtxts}
 
                 # add new words to words_by_text_by_lang
                 for word in words.values():
                     if word.text not in self.words_by_text_by_lang[lang]:
                         self.words_by_text_by_lang[lang][word.text] = word
                     else:
-                        self.words_by_text_by_lang[lang][word.text].qids.append(qid)
+                        self.words_by_text_by_lang[lang][word.text].qids.add(qid)
                     self.changed_variables.add('words_by_text_by_lang')
 
                 self.question_by_qid_by_lang[lang][qid] = question
@@ -306,6 +323,7 @@ class DictionaryCreator(object):
             tokenizer = Tokenizer(BPE())
             tokenizer.pre_tokenizer = Whitespace()
             trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words) possible solution: use pre-defined word list for English, using utoken instead did not significantly improve results
+            # todo: try out a WordPieceTrainer (https://towardsdatascience.com/designing-tokenizers-for-low-resource-languages-7faa4ab30ef4)
             tokenizer.train(files=[file], trainer=trainer)
 
             # tokenize all verses
@@ -329,7 +347,7 @@ class DictionaryCreator(object):
                 if wtxt in self.words_by_text_by_lang[lang]:
                     self.words_by_text_by_lang[lang][wtxt].occurrences_in_bible += 1
                 else:
-                    self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, [], 1)
+                    self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, set(), 1)
                 self.changed_variables.add('words_by_text_by_lang')
 
     def _combine_alignments(self):
@@ -363,11 +381,10 @@ class DictionaryCreator(object):
 
                 result = subprocess.run(['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer],
                                         capture_output=True, text=True)
-                # retrieve the 10th (last) occurrence of cross entropy and perplexity
-                cross_entropy = float(re.search(
-                    r'(cross entropy: (.|\n)*){9}cross entropy: (\d+\.\d+)', result.stderr).group(3))
-                perplexity = float(re.search(
-                    r'(perplexity: (.|\n)*){9}perplexity: (\d+\.\d+)', result.stderr).group(3))
+                # retrieve the final entropy and perplexity
+                matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
+                cross_entropy = float(matches.group(2))
+                perplexity = float(matches.group(3))
                 print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
 
     def preprocess_data(self, load=False, save=False):
@@ -386,13 +403,14 @@ class DictionaryCreator(object):
         word_1.add_aligned_word(word_2)
         self.changed_variables.add('words_by_text_by_lang')
 
-    def _map_word_to_qid(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None, score_by_wtxt_by_qid_by_lang=None):
-        for new_qid_1 in self.words_by_text_by_lang[lang_1][wtxt_1].qids:
+    def _map_word_to_qid(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score=None,
+                         score_by_wtxt_by_qid_by_lang=None):
+        for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
             if link_score is None:
-                self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][lang_1][new_qid_1] += ', ' + wtxt_2
+                self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
                 self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
             else:
-                score_by_wtxt_by_qid_by_lang[lang_2][new_qid_1][wtxt_2] = link_score
+                score_by_wtxt_by_qid_by_lang[target_lang][new_qid][target_wtxt] = link_score
 
     def _map_word_to_qid_bidirectionally(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None,
                                          score_by_wtxt_by_qid_by_lang=None):
@@ -459,11 +477,9 @@ class DictionaryCreator(object):
         weighted_edges = []
         for lang_1 in self.words_by_text_by_lang:
             for word_1 in self.words_by_text_by_lang[lang_1].values():
-                for word_2_str, count in word_1.aligned_words.items():
-                    lang_2, wtxt_2 = word_2_str.split(': ')
-                    if lang_2 not in self.target_langs:  # hacky
+                for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
+                    if word_2.iso_language not in self.target_langs:  # hacky way to ignore additional languages in graph (instead of re-building the graph with only target languages)
                         continue
-                    word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                     weighted_edges.append([word_1, word_2, count])
 
         # create graph structures with NetworkX
@@ -577,7 +593,6 @@ class DictionaryCreator(object):
                             and word_2.iso_language in self.target_langs \
                             and word_1.iso_language == word_2.iso_language \
                             and (word_2, word_1) not in link_candidates:
-                        # and word_1.text in ('zögerte', 'ögerte', 'zögere'):
                         link_candidates.add((word_1, word_2))
         return list(link_candidates)
 
@@ -593,10 +608,12 @@ class DictionaryCreator(object):
                         and word_1.iso_language != word_2.iso_language \
                         and (word_2, word_1) not in link_candidates:
                     link_candidates.add((word_1, word_2))
+                    if word_1.text == 'stöhnen' or word_2.text == 'stöhnen':
+                        print(word_1.text, word_2.text)
         return list(link_candidates)
 
     def _compute_sum_of_weights(self, word_1, lang_2):
-        # compute sum of weights from word_1 to lang_2 words in neighbors of word_1
+        # compute sum of weights from word_1 to target_lang words in neighbors of word_1
         # precompute strength sums to improve performance --> store them in cache self.strength_by_lang_by_word
         if lang_2 not in self.strength_by_lang_by_word[word_1]:
             self.strength_by_lang_by_word[word_1][lang_2] = sum(self.word_graph.get_edge_data(word_1, w)['weight']
@@ -638,9 +655,9 @@ class DictionaryCreator(object):
                 continue
             distance = edit_distance(wtxt_1, wtxt_2)
             if distance < max(len(wtxt_1), len(wtxt_2)) / 3:
-                # if wtxt_1 in ('abgewandt', 'bricht') or wtxt_2 in ('abgewandt', 'bricht'):
-                #     print(wtxt_1, wtxt_2)
-                # print(lang, distance, wtxt_1, wtxt_2, link_score)
+                # if source_wtxt in ('abgewandt', 'bricht') or target_wtxt in ('abgewandt', 'bricht'):
+                #     print(source_wtxt, target_wtxt)
+                # print(lang, distance, source_wtxt, target_wtxt, link_score)
 
                 # find the base lemma, which is the most occurring lemma
                 base_lemma_1 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_1, wtxt_1)
@@ -695,9 +712,46 @@ class DictionaryCreator(object):
             self._save_state()
 
     def _contract_lemmas(self, load=False, save=False):
+        def _update_aligned_words(lemma_word, base_lemma_word):
+            # replace references to the lemma group words with references to the lemma group node
+            for aligned_word, count in self.words_by_text_by_lang[lang][lemma_word.text]. \
+                    get_aligned_words_and_counts(self.words_by_text_by_lang):
+                aligned_word.remove_alignment(lemma_word)
+                aligned_word.add_aligned_word(base_lemma_word, count)
+            del self.words_by_text_by_lang[lang][lemma_word.text]
+
         # merge lemmas in same lemma groups together into a single node
         if load:
             self._load_state()
+
+        for lang in self.lemma_group_by_base_lemma_by_lang:
+            if lang == 'eng':
+                continue  # We lemmatize English words using wordnet instead.
+
+            for base_lemma_wtxt, lemma_wtxt_group in tqdm(self.lemma_group_by_base_lemma_by_lang[lang].items(),
+                                                          desc=f'Contracting lemmas for {lang}',
+                                                          total=len(self.lemma_group_by_base_lemma_by_lang[lang])):
+                assert (len(lemma_wtxt_group) > 1)
+
+                # collect words that belong to the same lemma group
+                base_lemma_word = self.words_by_text_by_lang[lang][base_lemma_wtxt]
+                lemma_group_words = set()
+                for lemma in lemma_wtxt_group:
+                    if lemma != base_lemma_wtxt:
+                        lemma_group_words.add(self.words_by_text_by_lang[lang][lemma])
+
+                # contract words in the graph (i.e., merge all grouped lemma nodes into a single lemma group node)
+                base_lemma_word.merge_words(lemma_group_words)
+                _update_aligned_words(base_lemma_word, base_lemma_word)
+                self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
+
+                print(base_lemma_word)
+                for lemma_word in lemma_group_words:
+                    print('---', lemma_word)
+                    assert (lemma_word != base_lemma_word)
+                    _update_aligned_words(lemma_word, base_lemma_word)
+        self.changed_variables.add('word_graph')
+        self.changed_variables.add('words_by_text_by_lang')
 
         if save:
             self._save_state()
@@ -936,7 +990,8 @@ class DictionaryCreator(object):
         # We only consider questions which have at least one source wtxt in the gt set with a target translation.
         # MRR improvement todo: Also filter out source wtxts (and questions, if empty) that do not appear in the source verses. (e.g., 'snake' does not appear in the KJV bible)
         # MRR improvement todo: also do this for source langs different from eng
-        if target_lang == 'urd':
+        if target_lang in ('urd', 'tpi'):
+            print(f'Cannot compute MRR for {target_lang} because no ground truth data is available.')
             return None
         target_qids = defaultdict(list)
         df_test = self._load_test_data(self.source_lang, target_lang)
@@ -981,7 +1036,13 @@ class DictionaryCreator(object):
         print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:
             print(f'\n\n--- Evaluation for {target_lang} ---')
-            self._compute_f1_score(filtered_target_wtxts_by_qid_by_lang[target_lang], target_lang)
+            predicted_target_wtxts_by_qid = filtered_target_wtxts_by_qid_by_lang[target_lang]
+            if len(predicted_target_wtxts_by_qid) == 0:
+                print(f'Cannot compute F1 score etc. and MRR for {target_lang} '
+                      f'because no target semantic domains have been predicted. '
+                      f'Have you loaded semantic domains for the source language?')
+                continue
+            self._compute_f1_score(predicted_target_wtxts_by_qid, target_lang)
             self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
 
 
@@ -992,6 +1053,7 @@ if __name__ == '__main__':
         # 'bid-eng-BBE': 'eng-engBBE.txt',
         # 'bid-eng-Brenton': 'eng-eng-Brenton.txt',
         'bid-eng-DBY': 'eng-engDBY.txt',
+        # 'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
         # 'bid-eng-DRA': 'eng-engDRA.txt',
         # 'bid-eng-gnv': 'eng-enggnv.txt',
         # 'bid-eng-jps': 'eng-engjps.txt',
@@ -1022,7 +1084,8 @@ if __name__ == '__main__':
         # 'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
         # 'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
 
-        # 'bid-fra-fob': 'fra-fra_fob.txt',
+        'bid-fra-fob': 'fra-fra_fob.txt',
+        # 'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
         # 'bid-fra-lsg': 'fra-fraLSG.txt',
 
         # 'bid-spa': 'spa-spaRV1909.txt',
@@ -1036,7 +1099,7 @@ if __name__ == '__main__':
         # 'bid-deu': 'no semdoms available/deu-deuelo.txt',
         # 'bid-rus': 'no semdoms available/rus-russyn.txt',,
         # 'bid-vie': 'no semdoms available/vie-vie1934.txt',
-        'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
+        # 'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
         # 'bid-swp': 'no semdoms available/swp-swp.txt',
     }, score_threshold=0.2)
 
@@ -1045,12 +1108,15 @@ if __name__ == '__main__':
     dc.preprocess_data(load=load, save=save)
     dc.map_words_to_qids(load=load, save=save)
 
-    dc.build_word_graph(load=load, save=save)
+    dc.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
     dc._predict_lemmas(load=load, save=save)
-    dc._contract_lemmas(load=load, save=save)
     dc._save_state()
+    dc._contract_lemmas(load=load, save=save)
+    dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
     dc.predict_links(load=load, save=save)
-    dc.plot_subgraph(lang='eng', text='river', min_count=1)
+    dc.plot_subgraph(lang='eng', text='drink', min_count=1)
+    assert (
+        not dc.check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
     # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)
