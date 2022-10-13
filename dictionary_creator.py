@@ -28,6 +28,7 @@ class DictionaryCreator(object):
         def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
             self.text = text
             self.iso_language = lang
+            assert (type(qids) == set)
             self.qids = set() if qids is None else qids
             self.occurrences_in_bible = occurrences_in_bible
             self.display_text = text
@@ -43,6 +44,7 @@ class DictionaryCreator(object):
                 yield word, count
 
         def add_aligned_word(self, word, count=1):
+            # caution: this is not symmetric
             self._aligned_words[str(word)] += count
 
         def remove_alignment(self, word):
@@ -273,7 +275,7 @@ class DictionaryCreator(object):
                 qid = f'{row.cid} {row.question_index}'
                 wtxts = [wtxt.strip().lower() for wtxt in answer.split(',') if wtxt]
                 if lang == 'eng':
-                    wtxts = self._lemmatize_verse(wtxts)
+                    wtxts = self._lemmatize_english_verse(wtxts)
                 words = {wtxt: self.Word(wtxt.strip(), lang, {qid}) for wtxt in wtxts}
 
                 # add new words to words_by_text_by_lang
@@ -287,7 +289,7 @@ class DictionaryCreator(object):
                 self.question_by_qid_by_lang[lang][qid] = question
                 self.changed_variables.add('question_by_qid_by_lang')
 
-    def _lemmatize_verse(self, verse):
+    def _lemmatize_english_verse(self, verse):
         # https://stackoverflow.com/a/57686805/8816968
         lemmatized_wtxts = []
         pos_labels = pos_tag(verse)
@@ -328,7 +330,6 @@ class DictionaryCreator(object):
 
             # tokenize all verses
             wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
-            wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
 
             # lowercase all wtxts
             wtxts_by_verse = [[wtxt.lower() for wtxt in verse] for verse in wtxts_by_verse]
@@ -336,7 +337,7 @@ class DictionaryCreator(object):
             # lemmatize all English words
             lang = self._convert_bid_to_lang(bid)
             if lang == 'eng':
-                wtxts_by_verse = [self._lemmatize_verse(verse) for verse in wtxts_by_verse]
+                wtxts_by_verse = [self._lemmatize_english_verse(verse) for verse in wtxts_by_verse]
 
             self.wtxts_by_verse_by_bid[bid] = wtxts_by_verse.copy()
             self.changed_variables.add('wtxts_by_verse_by_bid')
@@ -397,10 +398,8 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def _add_directed_edge(self, wtxt_1, wtxt_2, lang_1, lang_2):
-        word_1 = self.words_by_text_by_lang[lang_1][wtxt_1]
-        word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
-        word_1.add_aligned_word(word_2)
+    def _add_directed_edge(self, word_1, word_2, count=1):
+        word_1.add_aligned_word(word_2, count)
         self.changed_variables.add('words_by_text_by_lang')
 
     def _map_word_to_qid(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score=None,
@@ -444,9 +443,11 @@ class DictionaryCreator(object):
                 wtxt_1_idx, wtxt_2_idx = [int(num) for num in aligned_wtxt_pair.split('-')]
                 wtxt_1 = wtxts_1[wtxt_1_idx]
                 wtxt_2 = wtxts_2[wtxt_2_idx]
+                word_1 = self.words_by_text_by_lang[lang_1][wtxt_1]
+                word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
-                self._add_directed_edge(wtxt_1, wtxt_2, lang_1, lang_2)
-                self._add_directed_edge(wtxt_2, wtxt_1, lang_2, lang_1)
+                self._add_directed_edge(word_1, word_2)
+                self._add_directed_edge(word_2, word_1)
 
     def map_words_to_qids(self, load=False, save=False):
         # map words in all target language bibles to semantic domains
@@ -533,44 +534,48 @@ class DictionaryCreator(object):
         selected_nodes.update(neighbors_1st_order)
         if len(selected_nodes) + len(neighbors_2nd_order) <= max_nodes:
             selected_nodes.update(neighbors_2nd_order)
-        if len(selected_nodes) + len(neighbors_3rd_order) <= max_nodes:
-            selected_nodes.update(neighbors_3rd_order)
-        G = filtered_word_graph.subgraph(selected_nodes)
+            if len(selected_nodes) + len(neighbors_3rd_order) <= max_nodes:
+                selected_nodes.update(neighbors_3rd_order)
+        displayed_subgraph = filtered_word_graph.subgraph(selected_nodes)
+        assert (len(displayed_subgraph.nodes) <= len(
+            displayed_subgraph.edges) + 1)  # necessary condition if graph is connected
 
         # set figure size heuristically
-        width = max(5, len(selected_nodes) / 2.5)
+        width = max(5, int(len(selected_nodes) / 2.2))
         plt.figure(figsize=(width, width))
 
         # use a different node color for each language
         palette = sns.color_palette('pastel')  # ('hls', len(self.target_langs))
         palette += [palette[2]] * 10  # hack to add color for 'vie' that is different from 'eng'
         palette = {lang: color for lang, color in zip(self.all_langs, palette)}
-        node_colors = [palette[word.iso_language] for word in G.nodes()]
+        node_colors = [palette[word.iso_language] for word in displayed_subgraph.nodes()]
 
         # show all the colors in a legend
         plt.legend(handles=[mpatches.Patch(color=palette[lang], label=lang) for lang in self.target_langs])
 
         # define position of nodes in figure
-        pos = nx.nx_agraph.graphviz_layout(G)
+        pos = nx.nx_agraph.graphviz_layout(displayed_subgraph)
 
         # draw nodes
-        nx.draw_networkx_nodes(G, pos=pos, node_color=node_colors)
+        nx.draw_networkx_nodes(displayed_subgraph, pos=pos, node_color=node_colors)
 
         # draw only word texts as node labels
-        nx.draw_networkx_labels(G, pos=pos, labels={word: self._transliterate_word(word) for word in G.nodes()})
+        nx.draw_networkx_labels(displayed_subgraph, pos=pos,
+                                labels={word: self._transliterate_word(word) for word in displayed_subgraph.nodes()})
 
-        # draw edges (thicker edges for more frequent alignments
-        for edge in G.edges(data='weight'):
+        # draw edges (thicker edges for more frequent alignments)
+        for edge in displayed_subgraph.edges(data='weight'):
             link_score = self._compute_link_score(edge[0], edge[1])
             color = 'green' if link_score >= self.score_threshold else 'gray'
-            nx.draw_networkx_edges(G, pos=pos, edgelist=[edge],
+            nx.draw_networkx_edges(displayed_subgraph, pos=pos, edgelist=[edge],
+                                   # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
                                    width=[math.log(edge[2]) + 1], alpha=0.5,
                                    edge_color=color)
 
         # draw edge labels
-        edge_weights = nx.get_edge_attributes(G, 'weight')
+        edge_weights = nx.get_edge_attributes(displayed_subgraph, 'weight')
         if len(edge_weights):
-            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_weights)
+            nx.draw_networkx_edge_labels(displayed_subgraph, pos, edge_labels=edge_weights)
 
         # plot the title
         title = f'Words that fast_align aligned with the {lang} word "{text}"'
@@ -636,7 +641,7 @@ class DictionaryCreator(object):
             self._load_state()
 
         if len(self.base_lemma_by_wtxt_by_lang):
-            print('Skipped predicting lemmas because they were already predicted')
+            print('Skipped: Lemmas were already predicted')
             assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
                     len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
             return
@@ -712,21 +717,26 @@ class DictionaryCreator(object):
             self._save_state()
 
     def _contract_lemmas(self, load=False, save=False):
-        def _update_aligned_words(lemma_word, base_lemma_word):
-            # replace references to the lemma group words with references to the lemma group node
-            for aligned_word, count in self.words_by_text_by_lang[lang][lemma_word.text]. \
-                    get_aligned_words_and_counts(self.words_by_text_by_lang):
-                aligned_word.remove_alignment(lemma_word)
-                aligned_word.add_aligned_word(base_lemma_word, count)
-            del self.words_by_text_by_lang[lang][lemma_word.text]
-
         # merge lemmas in same lemma groups together into a single node
         if load:
             self._load_state()
 
+        assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
+                len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
+
+        # check if we already contracted the lemmas for at least one target language (except English)
+        for lang in self.target_langs:
+            if lang == 'eng':
+                continue
+            sample_lemma_wtxt_group = next(iter(self.lemma_group_by_base_lemma_by_lang[lang].values()))
+            if any(wtxt not in self.words_by_text_by_lang[lang] for wtxt in sample_lemma_wtxt_group):
+                # there exists one lemma wtxt in sample_lemma_wtxt_group that is not in self.words_by_text_by_lang
+                print('Skipped: Lemma groups were already contracted')
+                return
+
         for lang in self.lemma_group_by_base_lemma_by_lang:
             if lang == 'eng':
-                continue  # We lemmatize English words using wordnet instead.
+                continue  # todo?: We lemmatize English words using wordnet instead. --> todo: do not collect lemmas for English.
 
             for base_lemma_wtxt, lemma_wtxt_group in tqdm(self.lemma_group_by_base_lemma_by_lang[lang].items(),
                                                           desc=f'Contracting lemmas for {lang}',
@@ -734,11 +744,20 @@ class DictionaryCreator(object):
                 assert (len(lemma_wtxt_group) > 1)
 
                 # collect words that belong to the same lemma group
+                # by finding the corresponding words for each lemma text
                 base_lemma_word = self.words_by_text_by_lang[lang][base_lemma_wtxt]
                 lemma_group_words = set()
-                for lemma in lemma_wtxt_group:
-                    if lemma != base_lemma_wtxt:
-                        lemma_group_words.add(self.words_by_text_by_lang[lang][lemma])
+                for lemma_wtxt in lemma_wtxt_group:
+                    if lemma_wtxt != base_lemma_wtxt:
+                        lemma_group_words.add(self.words_by_text_by_lang[lang][lemma_wtxt])
+
+                def _update_aligned_words(lemma_word, base_lemma_word):
+                    # replace references to the lemma group words with references to the lemma group node
+                    for aligned_word, count in self.words_by_text_by_lang[lang][lemma_word.text]. \
+                            get_aligned_words_and_counts(self.words_by_text_by_lang):
+                        aligned_word.remove_alignment(lemma_word)
+                        self._add_directed_edge(base_lemma_word, aligned_word, count)
+                    del self.words_by_text_by_lang[lang][lemma_word.text]
 
                 # contract words in the graph (i.e., merge all grouped lemma nodes into a single lemma group node)
                 base_lemma_word.merge_words(lemma_group_words)
@@ -750,7 +769,6 @@ class DictionaryCreator(object):
                     print('---', lemma_word)
                     assert (lemma_word != base_lemma_word)
                     _update_aligned_words(lemma_word, base_lemma_word)
-        self.changed_variables.add('word_graph')
         self.changed_variables.add('words_by_text_by_lang')
 
         if save:
@@ -814,7 +832,8 @@ class DictionaryCreator(object):
             assert (tfidfs.shape[0] == len(aligned_wtxts_by_qid))
             for idx, tfidf in tqdm(enumerate(tfidfs),
                                    desc=f'Collecting top {target_lang} tf-idf scores',
-                                   total=tfidfs.shape[0]):  # caution: might fail in the debugger
+                                   total=tfidfs.shape[
+                                       0]):  # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
                 qid = list(aligned_wtxts_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)
@@ -970,6 +989,7 @@ class DictionaryCreator(object):
         #
         # f1_adjusted2 = 2 * (precision * recall_adjusted2) / (precision + recall_adjusted2)
         # print(f'F1**: {f1_adjusted2:.3f}')
+        return precision, recall, f1, recall_adjusted, f1_adjusted
 
     def _load_test_data(self, source_lang, target_lang):
         # load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation)
@@ -1028,11 +1048,13 @@ class DictionaryCreator(object):
         print(
             f'{len(target_qids)} / {len(self.top_scores_by_qid_by_lang[target_lang])} {target_lang} questions selected')
         print(f'MRR: {mean_reciprocal_rank:.3f}')
+        return mean_reciprocal_rank
 
     def evaluate(self, load=False, print_reciprocal_ranks=False):
         if load:
             self._load_state()
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
+        results = dict()
         print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:
             print(f'\n\n--- Evaluation for {target_lang} ---')
@@ -1042,8 +1064,18 @@ class DictionaryCreator(object):
                       f'because no target semantic domains have been predicted. '
                       f'Have you loaded semantic domains for the source language?')
                 continue
-            self._compute_f1_score(predicted_target_wtxts_by_qid, target_lang)
-            self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
+            precision, recall, f1, recall_adjusted, f1_adjusted = self._compute_f1_score(predicted_target_wtxts_by_qid,
+                                                                                         target_lang)
+            mean_reciprocal_rank = self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
+            results[target_lang] = {
+                'precision': precision,
+                'recall': recall,
+                'F1': f1,
+                'recall*': recall_adjusted,
+                'F1*': f1_adjusted,
+                'MRR': mean_reciprocal_rank
+            }
+        return results
 
 
 if __name__ == '__main__':
@@ -1115,8 +1147,6 @@ if __name__ == '__main__':
     dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
     dc.predict_links(load=load, save=save)
     dc.plot_subgraph(lang='eng', text='drink', min_count=1)
-    assert (
-        not dc.check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
     # dc.train_tfidf_based_model(load=load, save=save)
     dc.evaluate(load=load, print_reciprocal_ranks=False)

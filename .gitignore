@@ -3,3 +3,4 @@
 .__pycache__/
 data/
 visualizations/
+test/event_log.txt
