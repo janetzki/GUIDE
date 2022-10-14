@@ -148,6 +148,8 @@ class DictionaryCreator(object):
         return DictionaryCreator._apply_prediction(self.word_graph, predict, ebunch)
 
     def _save_state(self):
+        if len(self.changed_variables) == 0:
+            return
         print('Saving state...')
 
         # save newly changed class variables to a separate dill file
@@ -541,7 +543,7 @@ class DictionaryCreator(object):
             displayed_subgraph.edges) + 1)  # necessary condition if graph is connected
 
         # set figure size heuristically
-        width = max(5, int(len(selected_nodes) / 2.2))
+        width = max(6, int(len(selected_nodes) / 2.2))
         plt.figure(figsize=(width, width))
 
         # use a different node color for each language
@@ -1015,18 +1017,19 @@ class DictionaryCreator(object):
             return None
         target_qids = defaultdict(list)
         df_test = self._load_test_data(self.source_lang, target_lang)
-        for source_wtxt in tqdm(self.words_by_text_by_lang[self.source_lang].values(),
-                                desc=f'Filtering {target_lang} question ids',
-                                total=len(self.words_by_text_by_lang[self.source_lang]),
-                                disable=True):
-            target_wtxts = list(df_test.query(f'source_wtxt=="{source_wtxt.text}"')['target_wtxts'])
-            if len(target_wtxts) == 0:
+
+        for _, row in tqdm(df_test.iterrows(),
+                           desc=f'Filtering {target_lang} question ids',
+                           total=len(df_test),
+                           disable=True):
+            source_word = self.words_by_text_by_lang[self.source_lang].get(row['source_wtxt'], None)
+            if source_word is None:
                 continue
-            target_wtxts = target_wtxts[0]
-            for qid in source_wtxt.qids:
+            target_wtxts = row['target_wtxts']
+            for qid in source_word.qids:
                 if qid in self.top_scores_by_qid_by_lang[target_lang]:
                     target_qids[qid].extend(target_wtxts)
-                # some semantic domains are missing in the target sds because no aligned wtxts were found
+                # Some semantic domains are missing in the target sds because no aligned wtxts were found.
 
         # in all selected target top_scores, look for first ranked target wtxt that also appears in df_test (gt data)
         mean_reciprocal_rank = 0
