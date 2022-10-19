@@ -151,8 +151,12 @@ class TestDictionaryCreator(TestCase):
     #     self.fail()
 
     def test_build_word_graph(self):
-        # todo: fix and test 'gather' bug
-        self.fail()
+        self._initialize_5_german_words()
+
+        self.dc.build_word_graph()
+
+        self.assertEqual(self.dc.word_graph.number_of_nodes(), 10)
+        self.assertEqual(self.dc.word_graph.number_of_edges(), 9)
 
     # def test_plot_subgraph(self):
     #     self.fail()
@@ -177,7 +181,7 @@ class TestDictionaryCreator(TestCase):
         self.dc.words_by_text_by_lang[lang][text] = word
         return word
 
-    def test__predict_lemmas(self):
+    def _initialize_5_german_words(self):
         self.dc.target_langs = ['eng', 'deu']
 
         eng_word_1_1 = self._create_word('pass', 'eng', None, 30)
@@ -202,6 +206,9 @@ class TestDictionaryCreator(TestCase):
         self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3, 5)
         self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_2_2, 1)
         self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_2, 5)
+
+    def test__predict_lemmas(self):
+        self._initialize_5_german_words()
 
         self.dc.build_word_graph()
         self.dc.plot_subgraph('eng', 'pass')
