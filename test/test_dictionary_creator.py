@@ -8,13 +8,15 @@ from dictionary_creator import DictionaryCreator
 class TestDictionaryCreator(TestCase):
     def setUp(self) -> None:
         self.dc = DictionaryCreator(bibles_by_bid={
-            'bid-eng-DBY-100': '../../../dictionary_creator/data/1_test_data/eng-engDBY-100-verses.txt',
-            'bid-fra-fob-100': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-100-verses.txt',
-            # 'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
-            # 'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
-        }, score_threshold=0.2)
+            'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
+            'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
+        },
+            score_threshold=0.2,
+            # sd_path_prefix='test/data/semdom_qa_clean_short'
+        )
+        self.maxDiff = 100000
 
-    def check_if_edge_weights_doubled(self):
+    def _check_if_edge_weights_doubled(self):
         # check if there are only even edge weights because the edge weights doubled
         edge_weights = nx.get_edge_attributes(self.dc.word_graph, 'weight')
         for weight in edge_weights.values():
@@ -22,7 +24,7 @@ class TestDictionaryCreator(TestCase):
                 return False
         return True
 
-    def execute_full_pipeline(self, dc, load, save):
+    def _execute_full_pipeline(self, dc, load, save):
         dc.preprocess_data(load=load, save=save)
         dc.map_words_to_qids(load=load, save=save)
 
@@ -31,35 +33,39 @@ class TestDictionaryCreator(TestCase):
         dc._contract_lemmas(load=load, save=save)
         dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
         dc.predict_links(load=load, save=save)
-        dc.plot_subgraph(lang='eng', text='drink', min_count=1)
         dc.plot_subgraph(lang='fra', text='et', min_count=3)
         self.assertFalse(
-            self.check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
+            self._check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
         # dc.train_tfidf_based_model(load=load, save=save)
-        evaluation_results = dc.evaluate(load=load, print_reciprocal_ranks=False)
-        return evaluation_results
+        return dc.evaluate(load=load, print_reciprocal_ranks=False)
 
     def test_full_pipeline_twice(self):
         print('STARTING PIPELINE RUN 1/2')
-        evaluation_results_run_1 = self.execute_full_pipeline(self.dc, load=False, save=False)
+        evaluation_results_run_1 = self._execute_full_pipeline(self.dc, load=False, save=True)
 
         dc_new = DictionaryCreator(bibles_by_bid={
-            'bid-eng-DBY-100': '../../../dictionary_creator/data/1_test_data/eng-engDBY-100-verses.txt',
-            'bid-fra-fob-100': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-100-verses.txt',
-        }, score_threshold=0.2)
+            'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
+            'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
+        },
+            score_threshold=0.2,
+            # sd_path_prefix='test/data/semdom_qa_clean_short'
+        )
 
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        evaluation_results_run_2 = self.execute_full_pipeline(dc_new, load=True, save=True)
-        # self.assertDictEqual(self.dc.sds_by_lang, dc_new.sds_by_lang)
+        evaluation_results_run_2 = self._execute_full_pipeline(dc_new, load=True, save=True)
+        # self.assertDictEqual(self.dc.sds_by_lang, dc_new.sds_by_lang) # todo: assert equality
         self.assertDictEqual(self.dc.verses_by_bid, dc_new.verses_by_bid)
-        self.assertDictEqual(self.dc.words_by_text_by_lang, dc_new.words_by_text_by_lang)
+        self.assertDictEqual(self.dc.words_by_text_by_lang['eng'], dc_new.words_by_text_by_lang['eng'])
         self.assertDictEqual(self.dc.question_by_qid_by_lang, dc_new.question_by_qid_by_lang)
         self.assertDictEqual(self.dc.wtxts_by_verse_by_bid, dc_new.wtxts_by_verse_by_bid)
         self.assertDictEqual(self.dc.aligned_wtxts_by_qid_by_lang_by_lang, dc_new.aligned_wtxts_by_qid_by_lang_by_lang)
+        # self.assertTrue(nx.could_be_isomorphic(self.dc.word_graph, dc_new.word_graph))
+        # self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph, edge_match=lambda x, y: x['weight'] == y['weight'])) # too slow
         self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
         self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
-        self.assertDictEqual(self.dc.strength_by_lang_by_word, dc_new.strength_by_lang_by_word)
+        self.assertEqual(sorted(self.dc.strength_by_lang_by_word.items(), key=lambda x: str(x)),
+                         sorted(dc_new.strength_by_lang_by_word.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(evaluation_results_run_1, evaluation_results_run_2)
 
@@ -79,8 +85,8 @@ class TestDictionaryCreator(TestCase):
             'star': word_3,
             'moon star': word_4,
         }), {
-            '1.1.1.1 Moon': ['moon', 'lunar', 'moon star'],
-            '1.1.1.2 Star': ['star', 'moon star'],
+            '1.1.1.1 1': ['moon', 'lunar', 'moon star'],
+            '1.1.1.2 1': ['star', 'moon star'],
         })
 
     # def test__transliterate_word(self):
@@ -132,8 +138,9 @@ class TestDictionaryCreator(TestCase):
     # def test_map_words_to_qids(self):
     #     self.fail()
 
-    # def test_build_word_graph(self):
-    #     self.fail()
+    def test_build_word_graph(self):
+        # todo: fix and test 'gather' bug
+        self.fail()
 
     # def test_plot_subgraph(self):
     #     self.fail()
@@ -154,16 +161,32 @@ class TestDictionaryCreator(TestCase):
     #     self.fail()
 
     def test__predict_lemmas(self):
-        self.dc.words_by_text_by_lang['fra']['boire'] = word_1 = DictionaryCreator.Word('boire', 'fra', set(), 3)
-        self.dc.words_by_text_by_lang['fra']['bu'] = word_2 = DictionaryCreator.Word('bu', 'fra', set(), 2)
-        self.dc.words_by_text_by_lang['fra']['buve'] = word_3 = DictionaryCreator.Word('buve', 'fra', set(), 1)
-        self.dc.words_by_text_by_lang['fra']['eau'] = word_4 = DictionaryCreator.Word('eau', 'fra', set(), 5)
-        self.dc.words_by_text_by_lang['fra']['eaux'] = word_5 = DictionaryCreator.Word('eaux', 'fra', set(), 4)
-        word_1.add_aligned_word(word_2)
-        word_1.add_aligned_word(word_3)
-        word_4.add_aligned_word(word_5)
+        self.dc.words_by_text_by_lang['eng']['drink'] = eng_word_1 = DictionaryCreator.Word('drink', 'eng', set(), 3)
+        self.dc.words_by_text_by_lang['eng']['drank'] = eng_word_2 = DictionaryCreator.Word('drank', 'eng', set(), 2)
+        self.dc.words_by_text_by_lang['eng']['drunk'] = eng_word_3 = DictionaryCreator.Word('drunk', 'eng', set(), 1)
+        self.dc.words_by_text_by_lang['eng']['water'] = eng_word_4 = DictionaryCreator.Word('water', 'eng', set(), 5)
+        self.dc.words_by_text_by_lang['eng']['waters'] = eng_word_5 = DictionaryCreator.Word('waters', 'eng', set(), 4)
+
+        self.dc.words_by_text_by_lang['fra']['boire'] = fra_word_1 = DictionaryCreator.Word('boire', 'fra', set(), 3)
+        self.dc.words_by_text_by_lang['fra']['bu'] = fra_word_2 = DictionaryCreator.Word('bu', 'fra', set(), 2)
+        self.dc.words_by_text_by_lang['fra']['buve'] = fra_word_3 = DictionaryCreator.Word('buve', 'fra', set(), 1)
+        self.dc.words_by_text_by_lang['fra']['eau'] = fra_word_4 = DictionaryCreator.Word('eau', 'fra', set(), 5)
+        self.dc.words_by_text_by_lang['fra']['eaux'] = fra_word_5 = DictionaryCreator.Word('eaux', 'fra', set(), 4)
+
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_1)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_2)
+        self.dc._add_bidirectional_edge(eng_word_3, fra_word_3)
+        self.dc._add_bidirectional_edge(eng_word_4, fra_word_4)
+        self.dc._add_bidirectional_edge(eng_word_5, fra_word_5)
+
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_2)
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_3)
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_4)
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_5)
+        self.dc._add_bidirectional_edge(eng_word_4, fra_word_5)
 
         self.dc.build_word_graph()
+        self.dc.plot_subgraph('eng', 'drink')
         self.dc._predict_lemmas()
 
         self.assertEqual({

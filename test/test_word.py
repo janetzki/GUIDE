@@ -12,4 +12,5 @@ class TestWord(TestCase):
     #     self.fail()
 
     def test_merge_words(self):
+        # todo: assert that the aligned words stay symmetric
         self.fail()

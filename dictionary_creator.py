@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 
 class DictionaryCreator(object):
-    class Word:
+    class Word(object):
         def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
             self.text = text
             self.iso_language = lang
@@ -34,7 +34,23 @@ class DictionaryCreator(object):
             self.display_text = text
             self._aligned_words = Counter()
 
+        def __eq__(self, other):
+            if isinstance(other, DictionaryCreator.Word):
+                return self.text == other.text \
+                       and self.iso_language == other.iso_language \
+                       and self.qids == other.qids \
+                       and self.occurrences_in_bible == other.occurrences_in_bible \
+                       and self.display_text == other.display_text \
+                       and self._aligned_words == other._aligned_words
+            return NotImplemented
+
+        def __hash__(self):
+            return hash((self.text, self.iso_language))
+
         def __str__(self):
+            return f'{self.iso_language}: {self.text}'
+
+        def __repr__(self):
             return f'{self.iso_language}: {self.text}'
 
         def get_aligned_words_and_counts(self, words_by_text_by_lang):
@@ -44,21 +60,35 @@ class DictionaryCreator(object):
                 yield word, count
 
         def add_aligned_word(self, word, count=1):
-            # caution: this is not symmetric
+            # caution: this is not symmetric, todo: make this symmetric
             self._aligned_words[str(word)] += count
 
         def remove_alignment(self, word):
             del self._aligned_words[str(word)]
 
-        def merge_words(self, words):
+        def _update_aligned_words(self, lang, removed_word, words_by_text_by_lang):
+            # replace references to a removed word (e.g., drink, drank, drunk)
+            # with references to a merged word (e.g., DRINK)
+            for aligned_word, count in words_by_text_by_lang[lang][removed_word.text]. \
+                    get_aligned_words_and_counts(words_by_text_by_lang):
+                aligned_word.remove_alignment(removed_word)
+                aligned_word.add_aligned_word(self, count)
+            del words_by_text_by_lang[lang][removed_word.text]
+
+        def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_word):
+            # todo: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
+            self.display_text = f'{self.text.upper()} ({len(words) + 1})'
             for word in words:
                 self.qids.update(
-                    word.qids)  # todo: weight qids by occurrences in bible when adding semdoms as nodes to graph
+                    word.qids)  # todo: weight qids by occurrences in Bible when adding semdoms as nodes to graph
                 self.occurrences_in_bible += word.occurrences_in_bible
                 self._aligned_words += word._aligned_words
-            self.display_text = f'{self.text.upper()} ({len(words) + 1})'
+                self._update_aligned_words(word.iso_language, word, words_by_text_by_lang)
+                strength_by_lang_by_word.pop(word, None)  # remove cache entry
+            self._update_aligned_words(self.iso_language, self, words_by_text_by_lang)
+            strength_by_lang_by_word.pop(self, None)  # remove cache entry
 
-    def __init__(self, bibles_by_bid, score_threshold=0.5):
+    def __init__(self, bibles_by_bid, score_threshold=0.5, sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
         self.bibles_by_bid = bibles_by_bid
         self.bids = list(bibles_by_bid.keys())
         self.source_bid = self.bids[0]
@@ -73,6 +103,7 @@ class DictionaryCreator(object):
         self.vectorizer = TfidfVectorizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
+        self.sd_path_prefix = sd_path_prefix
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -84,7 +115,7 @@ class DictionaryCreator(object):
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
 
-        # Not saved data (plotting)
+        # Not saved data (plotting) todo: save this data because we use it for computation, too
         self.word_graph = None
 
         # Saved data (lemmas)
@@ -132,7 +163,7 @@ class DictionaryCreator(object):
 
         References
         ----------
-        .. resource allocati todo (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
+        .. resource allocation... todo (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
            Predicting missing links via local information.
            Eur. Phys. J. B 71 (2009) 623.
            https://arxiv.org/pdf/0901.0553.pdf
@@ -143,7 +174,9 @@ class DictionaryCreator(object):
                         self.word_graph.get_edge_data(common_neighbor, word_2)['weight'])
                        / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
                           self._compute_sum_of_weights(common_neighbor, word_2.iso_language))
-                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2))
+                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2)
+                       if
+                       word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore eng-eng-eng edges
 
         return DictionaryCreator._apply_prediction(self.word_graph, predict, ebunch)
 
@@ -237,7 +270,7 @@ class DictionaryCreator(object):
                 print(f'Skipped: SDs for {lang} already loaded')
                 continue
 
-            sd_path = f'../semdom extractor/output/semdom_qa_clean_{lang}.csv'
+            sd_path = f'{self.sd_path_prefix}_{lang}.csv'
             if os.path.isfile(sd_path):
                 self.sds_by_lang[lang] = pd.read_csv(sd_path)
             else:
@@ -400,8 +433,9 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def _add_directed_edge(self, word_1, word_2, count=1):
+    def _add_bidirectional_edge(self, word_1, word_2, count=1):
         word_1.add_aligned_word(word_2, count)
+        word_2.add_aligned_word(word_1, count)
         self.changed_variables.add('words_by_text_by_lang')
 
     def _map_word_to_qid(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score=None,
@@ -448,8 +482,7 @@ class DictionaryCreator(object):
                 word_1 = self.words_by_text_by_lang[lang_1][wtxt_1]
                 word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
-                self._add_directed_edge(word_1, word_2)
-                self._add_directed_edge(word_2, word_1)
+                self._add_bidirectional_edge(word_1, word_2)
 
     def map_words_to_qids(self, load=False, save=False):
         # map words in all target language bibles to semantic domains
@@ -615,8 +648,6 @@ class DictionaryCreator(object):
                         and word_1.iso_language != word_2.iso_language \
                         and (word_2, word_1) not in link_candidates:
                     link_candidates.add((word_1, word_2))
-                    if word_1.text == 'stöhnen' or word_2.text == 'stöhnen':
-                        print(word_1.text, word_2.text)
         return list(link_candidates)
 
     def _compute_sum_of_weights(self, word_1, lang_2):
@@ -662,10 +693,6 @@ class DictionaryCreator(object):
                 continue
             distance = edit_distance(wtxt_1, wtxt_2)
             if distance < max(len(wtxt_1), len(wtxt_2)) / 3:
-                # if source_wtxt in ('abgewandt', 'bricht') or target_wtxt in ('abgewandt', 'bricht'):
-                #     print(source_wtxt, target_wtxt)
-                # print(lang, distance, source_wtxt, target_wtxt, link_score)
-
                 # find the base lemma, which is the most occurring lemma
                 base_lemma_1 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_1, wtxt_1)
                 base_lemma_2 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_2, wtxt_2)
@@ -694,14 +721,10 @@ class DictionaryCreator(object):
                         del self.lemma_group_by_base_lemma_by_lang[lang][wtxt]
                 self.lemma_group_by_base_lemma_by_lang[lang][new_base_lemma] = new_lemma_group
 
-                self.changed_variables.add('base_lemma_by_wtxt_by_lang')
-                self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
-
         for lang in self.lemma_group_by_base_lemma_by_lang:
             # sort self.lemma_group_by_base_lemma_by_lang by key
             self.lemma_group_by_base_lemma_by_lang[lang] = dict(
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
-        self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
 
         # validate lemmas
         for lang in self.lemma_group_by_base_lemma_by_lang:
@@ -714,6 +737,16 @@ class DictionaryCreator(object):
                 for lemma in lemma_group:
                     assert (self.base_lemma_by_wtxt_by_lang[lang][lemma] == base_lemma)
                     assert (lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang])
+
+        for lang in self.target_langs:
+            # if we found no lemmas for a language, at least create an empty dictionary to show that we tried finding them
+            if lang not in self.base_lemma_by_wtxt_by_lang:
+                self.base_lemma_by_wtxt_by_lang[lang] = dict()
+            if lang not in self.lemma_group_by_base_lemma_by_lang:
+                self.lemma_group_by_base_lemma_by_lang[lang] = defaultdict(set)
+
+        self.changed_variables.add('base_lemma_by_wtxt_by_lang')
+        self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
 
         if save:
             self._save_state()
@@ -753,24 +786,10 @@ class DictionaryCreator(object):
                     if lemma_wtxt != base_lemma_wtxt:
                         lemma_group_words.add(self.words_by_text_by_lang[lang][lemma_wtxt])
 
-                def _update_aligned_words(lemma_word, base_lemma_word):
-                    # replace references to the lemma group words with references to the lemma group node
-                    for aligned_word, count in self.words_by_text_by_lang[lang][lemma_word.text]. \
-                            get_aligned_words_and_counts(self.words_by_text_by_lang):
-                        aligned_word.remove_alignment(lemma_word)
-                        self._add_directed_edge(base_lemma_word, aligned_word, count)
-                    del self.words_by_text_by_lang[lang][lemma_word.text]
-
                 # contract words in the graph (i.e., merge all grouped lemma nodes into a single lemma group node)
-                base_lemma_word.merge_words(lemma_group_words)
-                _update_aligned_words(base_lemma_word, base_lemma_word)
+                base_lemma_word.merge_words(lemma_group_words, self.words_by_text_by_lang,
+                                            self.strength_by_lang_by_word)
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
-
-                print(base_lemma_word)
-                for lemma_word in lemma_group_words:
-                    print('---', lemma_word)
-                    assert (lemma_word != base_lemma_word)
-                    _update_aligned_words(lemma_word, base_lemma_word)
         self.changed_variables.add('words_by_text_by_lang')
 
         if save:
@@ -949,17 +968,18 @@ class DictionaryCreator(object):
         print(f'recall:    {recall:.3f} ({num_true_positive_wtxts} '
               f'/ {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found)')
 
-        f1 = 2 * (precision * recall) / (precision + recall)
+        f1 = 0.0 if precision * recall == 0 else 2 * (precision * recall) / (precision + recall)
         print(f'F1:        {f1:.3f}')
 
         # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # was actually found?
-        recall_adjusted = num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
+        recall_adjusted = 0.0 if num_true_positive_wtxts == 0 else num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
         print(f'recall*:   {recall_adjusted:.3f} ({num_true_positive_wtxts} '
               f'/ {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
               f'- that also appear in the target verses - found)')
 
-        f1_adjusted = 2 * (precision * recall_adjusted) / (precision + recall_adjusted)
+        f1_adjusted = 0.0 if precision * recall_adjusted == 0 else 2 * (precision * recall_adjusted) / (
+                    precision + recall_adjusted)
         print(f'F1*:       {f1_adjusted:.3f}\n')
 
         # How many of the gt target wtxts appear in the target verses?
