@@ -172,40 +172,36 @@ class TestDictionaryCreator(TestCase):
     # def test__compute_link_score(self):
     #     self.fail()
 
+    def _create_word(self, text, lang, qids=None, occurrences_in_bible=1):
+        word = DictionaryCreator.Word(text, lang, qids, occurrences_in_bible)
+        self.dc.words_by_text_by_lang[lang][text] = word
+        return word
+
     def test__predict_lemmas(self):
         self.dc.target_langs = ['eng', 'deu']
 
-        eng_word_1_1 = self.dc.words_by_text_by_lang['eng']['pass'] = DictionaryCreator.Word('pass', 'eng', set(), 3)
-        eng_word_1_2 = self.dc.words_by_text_by_lang['eng']['passed'] = DictionaryCreator.Word('passed', 'eng', set(),
-                                                                                               2)
-        eng_word_1_3 = self.dc.words_by_text_by_lang['eng']['passing'] = DictionaryCreator.Word('passing', 'eng', set(),
-                                                                                                1)
-        eng_word_2_1 = self.dc.words_by_text_by_lang['eng']['human'] = DictionaryCreator.Word('human', 'eng', set(), 5)
-        eng_word_2_2 = self.dc.words_by_text_by_lang['eng']['humans'] = DictionaryCreator.Word('humans', 'eng', set(),
-                                                                                               4)
+        eng_word_1_1 = self._create_word('pass', 'eng', None, 30)
+        eng_word_1_2 = self._create_word('passed', 'eng', None, 20)
+        eng_word_1_3 = self._create_word('passing', 'eng', None, 10)
+        eng_word_2_1 = self._create_word('human', 'eng', None, 50)
+        eng_word_2_2 = self._create_word('humans', 'eng', None, 40)
 
-        deu_word_1_1 = self.dc.words_by_text_by_lang['deu']['vorbeigehen'] = DictionaryCreator.Word('vorbeigehen',
-                                                                                                    'deu', set(), 3)
-        deu_word_1_2 = self.dc.words_by_text_by_lang['deu']['vorbeigegangen'] = DictionaryCreator.Word('vorbeigegangen',
-                                                                                                       'deu', set(), 2)
-        deu_word_1_3 = self.dc.words_by_text_by_lang['deu']['vorbeigehend'] = DictionaryCreator.Word('vorbeigehend',
-                                                                                                     'deu', set(), 1)
-        deu_word_2_1 = self.dc.words_by_text_by_lang['deu']['mensch'] = DictionaryCreator.Word('mensch', 'deu', set(),
-                                                                                               5)
-        deu_word_2_2 = self.dc.words_by_text_by_lang['deu']['menschen'] = DictionaryCreator.Word('menschen', 'deu',
-                                                                                                 set(), 4)
+        deu_word_1_1 = self._create_word('vorbeigehen', 'deu', None, 30)
+        deu_word_1_2 = self._create_word('vorbeigegangen', 'deu', None, 20)
+        deu_word_1_3 = self._create_word('vorbeigehend', 'deu', None, 10)
+        deu_word_2_1 = self._create_word('mensch', 'deu', None, 50)
+        deu_word_2_2 = self._create_word('menschen', 'deu', None, 40)
 
-        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1)
-        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_2)
-        self.dc._add_bidirectional_edge(eng_word_1_3, deu_word_1_3)
-        self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_1)
-        self.dc._add_bidirectional_edge(eng_word_2_2, deu_word_2_2)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_3, deu_word_1_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_2_2, deu_word_2_2, 10)
 
-        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1)
-        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_2)
-        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3)
-        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_2_2)
-        self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_2)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_2, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_2_2, 1)
+        self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_2, 5)
 
         self.dc.build_word_graph()
         self.dc.plot_subgraph('eng', 'pass')
@@ -223,11 +219,17 @@ class TestDictionaryCreator(TestCase):
             self.dc.lemma_group_by_base_lemma_by_lang['deu'])
 
     def test__contract_lemmas(self):
-        self.dc.words_by_text_by_lang['fra']['boire'] = DictionaryCreator.Word('boire', 'fra', set(), 3)
-        self.dc.words_by_text_by_lang['fra']['bu'] = DictionaryCreator.Word('bu', 'fra', set(), 2)
-        self.dc.words_by_text_by_lang['fra']['buve'] = DictionaryCreator.Word('buve', 'fra', set(), 1)
-        self.dc.words_by_text_by_lang['fra']['eau'] = DictionaryCreator.Word('eau', 'fra', set(), 5)
-        self.dc.words_by_text_by_lang['fra']['eaux'] = DictionaryCreator.Word('eaux', 'fra', set(), 4)
+        # self._create_word('drink', 'eng', None, 3)
+        # self._create_word('drank', 'eng', None, 2)
+        # self._create_word('drunk', 'eng', None, 1)
+        # self._create_word('water', 'eng', None, 5)
+        # self._create_word('waters', 'eng', None, 4)
+
+        self._create_word('boire', 'fra', None, 3)
+        self._create_word('bu', 'fra', None, 2)
+        self._create_word('buve', 'fra', None, 1)
+        self._create_word('eau', 'fra', None, 5)
+        self._create_word('eaux', 'fra', None, 4)
 
         self.dc.base_lemma_by_wtxt_by_lang = {
             'eng': {
@@ -255,7 +257,9 @@ class TestDictionaryCreator(TestCase):
             }
         }
 
-        self.dc._contract_lemmas(load=False, save=False)
+        self.dc._contract_lemmas()
+        self.dc.build_word_graph()
+        self.dc.plot_subgraph('fra', 'boire')
 
         self.assertEqual(self.dc.words_by_text_by_lang['fra'].keys(), {'boire', 'eau'})
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['boire'].display_text, 'BOIRE (3)')
