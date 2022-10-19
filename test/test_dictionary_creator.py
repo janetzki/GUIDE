@@ -12,7 +12,6 @@ class TestDictionaryCreator(TestCase):
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
         },
             score_threshold=0.2,
-            # sd_path_prefix='test/data/semdom_qa_clean_short'
         )
         self.maxDiff = 100000
 
@@ -24,7 +23,7 @@ class TestDictionaryCreator(TestCase):
                 return False
         return True
 
-    def _execute_full_pipeline(self, dc, load, save):
+    def _run_full_pipeline(self, dc, load, save):
         dc.preprocess_data(load=load, save=save)
         dc.map_words_to_qids(load=load, save=save)
 
@@ -40,34 +39,47 @@ class TestDictionaryCreator(TestCase):
         # dc.train_tfidf_based_model(load=load, save=save)
         return dc.evaluate(load=load, print_reciprocal_ranks=False)
 
-    def test_full_pipeline_twice(self):
-        print('STARTING PIPELINE RUN 1/2')
-        evaluation_results_run_1 = self._execute_full_pipeline(self.dc, load=False, save=True)
-
+    def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, sd_path_prefix=None, check_isomorphism=False):
         dc_new = DictionaryCreator(bibles_by_bid={
             'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
         },
             score_threshold=0.2,
-            # sd_path_prefix='test/data/semdom_qa_clean_short'
         )
 
+        if sd_path_prefix is not None:
+            self.dc.sd_path_prefix = sd_path_prefix
+            dc_new.sd_path_prefix = sd_path_prefix
+
+        print('STARTING PIPELINE RUN 1/2')
+        evaluation_results_run_1 = self._run_full_pipeline(self.dc, load=load_1, save=save_1)
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        evaluation_results_run_2 = self._execute_full_pipeline(dc_new, load=True, save=True)
-        # self.assertDictEqual(self.dc.sds_by_lang, dc_new.sds_by_lang) # todo: assert equality
+        evaluation_results_run_2 = self._run_full_pipeline(dc_new, load=load_2, save=save_2)
+
+        self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())
+        for lang in self.dc.sds_by_lang.keys():
+            self.assertTrue(self.dc.sds_by_lang[lang].equals(dc_new.sds_by_lang[lang]))
         self.assertDictEqual(self.dc.verses_by_bid, dc_new.verses_by_bid)
         self.assertDictEqual(self.dc.words_by_text_by_lang['eng'], dc_new.words_by_text_by_lang['eng'])
         self.assertDictEqual(self.dc.question_by_qid_by_lang, dc_new.question_by_qid_by_lang)
         self.assertDictEqual(self.dc.wtxts_by_verse_by_bid, dc_new.wtxts_by_verse_by_bid)
         self.assertDictEqual(self.dc.aligned_wtxts_by_qid_by_lang_by_lang, dc_new.aligned_wtxts_by_qid_by_lang_by_lang)
-        # self.assertTrue(nx.could_be_isomorphic(self.dc.word_graph, dc_new.word_graph))
-        # self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph, edge_match=lambda x, y: x['weight'] == y['weight'])) # too slow
+        if check_isomorphism:
+            self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph,
+                                             edge_match=lambda x, y: x['weight'] == y['weight']))
         self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
         self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
         self.assertEqual(sorted(self.dc.strength_by_lang_by_word.items(), key=lambda x: str(x)),
                          sorted(dc_new.strength_by_lang_by_word.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(evaluation_results_run_1, evaluation_results_run_2)
+
+    def test_full_pipeline_with_loading(self):
+        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False)
+
+    def test_full_pipeline_without_loading(self):
+        self._run_full_pipeline_twice(load_1=False, save_1=True, load_2=True, save_2=False,
+                                      sd_path_prefix='test/data/semdom_qa_clean_short', check_isomorphism=True)
 
     def test__convert_bid_to_lang(self):
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-eng-DBY'), 'eng')
