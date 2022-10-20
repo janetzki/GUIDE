@@ -519,7 +519,12 @@ class DictionaryCreator(object):
                 self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
                 self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
             else:
-                score_by_wtxt_by_qid_by_lang[target_lang][new_qid][target_wtxt] = link_score
+                score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
+                if target_wtxt in score_by_wtxt:
+                    score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt],
+                                                     link_score)  # todo: find mathematically elegant solution than using just the highest link score (something like 0.7 and 0.3 --> 0.9)
+                else:
+                    score_by_wtxt[target_wtxt] = link_score
 
     def _map_word_to_qid_bidirectionally(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None,
                                          score_by_wtxt_by_qid_by_lang=None):
@@ -875,21 +880,6 @@ class DictionaryCreator(object):
         if load:
             self._load_state()
 
-        # link_candidates = [
-        #     (self.words_by_text_by_lang['fra']['eau'],
-        #      self.words_by_text_by_lang['deu']['wasser']),
-        #     (self.words_by_text_by_lang['eng']['water'],
-        #      self.words_by_text_by_lang['deu']['wasser']),
-        #     (self.words_by_text_by_lang['eng']['water'],
-        #      self.words_by_text_by_lang['fra']['eau']),
-        #
-        #     (self.words_by_text_by_lang['fra']['boire'],
-        #      self.words_by_text_by_lang['deu']['trinken']),
-        #     (self.words_by_text_by_lang['eng']['drink'],
-        #      self.words_by_text_by_lang['deu']['trinken']),
-        #     (self.words_by_text_by_lang['eng']['drink'],
-        #      self.words_by_text_by_lang['fra']['boire']),
-        # ]
         link_candidates = self._find_translation_link_candidates()
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))

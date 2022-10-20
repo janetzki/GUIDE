@@ -204,11 +204,12 @@ class TestDictionaryCreator(TestCase):
     def _initialize_5_german_words(self):
         self.dc.target_langs = ['eng', 'deu']
 
-        eng_word_1_1 = self._create_word('pass', 'eng', None, 30)
+        eng_word_1_1 = self._create_word('pass', 'eng',
+                                         {'4.2.6.2.1 Football, soccer 9', '4.7.2 Pass laws 1', '3.6.7 Test 2'}, 30)
         eng_word_1_2 = self._create_word('passed', 'eng', None, 20)
-        eng_word_1_3 = self._create_word('passing', 'eng', None, 10)
-        eng_word_2_1 = self._create_word('human', 'eng', None, 50)
-        eng_word_2_2 = self._create_word('humans', 'eng', None, 40)
+        eng_word_1_3 = self._create_word('passing', 'eng', {'3.4 Emotion 4', '3.6.7 Test 2'}, 10)
+        eng_word_2_1 = self._create_word('human being', 'eng', {'2 Person 1'}, 50)
+        eng_word_2_2 = self._create_word('human beings', 'eng', {'2 Person 1'}, 40)
 
         deu_word_1_1 = self._create_word('vorbeigehen', 'deu', None, 30)
         deu_word_1_2 = self._create_word('vorbeigegangen', 'deu', None, 20)
@@ -293,9 +294,56 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['eau'].display_text, 'EAU (2)')
 
     def test_predict_links(self):
-        self.dc.predict_links()
+        self._initialize_5_german_words()
 
-    #        self.fail()
+        self.dc.build_word_graph()
+        self.dc.predict_links()
+        self.dc.plot_subgraph('eng', 'pass')
+
+        self.assertDictEqual({
+            'deu': {
+                '2 Person 1': {
+                    'mensch': 0.8,
+                    'menschen': 0.7692307692307693
+                },
+                '3.4 Emotion 4': {
+                    'vorbeigehend': 0.8
+                },
+                '3.6.7 Test 2': {
+                    'menschen': 0.05405405405405406,
+                    'vorbeigegangen': 0.2777777777777778,
+                    'vorbeigehen': 0.6451612903225806,
+                    'vorbeigehend': 0.8
+                },
+                '4.2.6.2.1 Football, soccer 9': {
+                    'menschen': 0.05405405405405406,
+                    'vorbeigegangen': 0.2777777777777778,
+                    'vorbeigehen': 0.6451612903225806,
+                    'vorbeigehend': 0.2777777777777778
+                },
+                '4.7.2 Pass laws 1': {
+                    'menschen': 0.05405405405405406,
+                    'vorbeigegangen': 0.2777777777777778,
+                    'vorbeigehen': 0.6451612903225806,
+                    'vorbeigehend': 0.2777777777777778
+                }}
+        }, dict(self.dc.top_scores_by_qid_by_lang))
+
+        # link_candidates = [
+        #     (self.words_by_text_by_lang['fra']['eau'],
+        #      self.words_by_text_by_lang['deu']['wasser']),
+        #     (self.words_by_text_by_lang['eng']['water'],
+        #      self.words_by_text_by_lang['deu']['wasser']),
+        #     (self.words_by_text_by_lang['eng']['water'],
+        #      self.words_by_text_by_lang['fra']['eau']),
+        #
+        #     (self.words_by_text_by_lang['fra']['boire'],
+        #      self.words_by_text_by_lang['deu']['trinken']),
+        #     (self.words_by_text_by_lang['eng']['drink'],
+        #      self.words_by_text_by_lang['deu']['trinken']),
+        #     (self.words_by_text_by_lang['eng']['drink'],
+        #      self.words_by_text_by_lang['fra']['boire']),
+        # ]
 
     def test_train_tfidf_based_model(self):
         self.dc.aligned_wtxts_by_qid_by_lang_by_lang = {
