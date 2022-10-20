@@ -261,9 +261,6 @@ class DictionaryCreator(object):
                 else:
                     file_path = os.path.join(self.state_files_path, f'{self.start_timestamp}_{variable_name}.dill')
 
-                # make a backup copy
-                # os.system(f'cp {file_path} {file_path}')
-
                 with open(file_path, 'wb') as state_file:
                     if key:
                         dill.dump(variable[key], state_file)
@@ -1173,7 +1170,11 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink'):
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink',
+                          prediction_method='link prediction'):
+        if prediction_method not in ('link prediction', 'tfidf'):
+            raise NotImplementedError
+
         self.preprocess_data(load=load, save=save)
         self.map_words_to_qids(load=load, save=save)
 
@@ -1181,13 +1182,15 @@ class DictionaryCreator(object):
         self._predict_lemmas(load=load, save=save)
         self._contract_lemmas(load=load, save=save)
         self.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
-        # self.predict_links(load=load, save=save)
+        if prediction_method == 'link prediction':
+            self.predict_links(load=load, save=save)
+        else:  # tfidf
+            self.train_tfidf_based_model(load=load, save=save)
         self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=1)
 
-        self.train_tfidf_based_model(load=load, save=save)
         self.evaluate(load=load, save=save, print_reciprocal_ranks=False)
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     dc = DictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
     dc.create_dictionary()

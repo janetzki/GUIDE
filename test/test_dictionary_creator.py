@@ -38,13 +38,15 @@ class TestDictionaryCreator(TestCase):
                 return False
         return True
 
-    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink'):
-        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_word=plot_word)
+    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink',
+                           prediction_method='link prediction'):
+        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_word=plot_word,
+                             prediction_method=prediction_method)
         self.assertFalse(
             self._check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
-                                 sd_path_prefix=None, check_isomorphism=False):
+                                 prediction_method='link prediction', sd_path_prefix=None, check_isomorphism=False):
         time.sleep(1)
         dc_new = TestDictionaryCreator._create_dictionary_creator()
 
@@ -53,9 +55,11 @@ class TestDictionaryCreator(TestCase):
             dc_new.sd_path_prefix = sd_path_prefix
 
         print('STARTING PIPELINE RUN 1/2')
-        self._run_full_pipeline(self.dc, load=load_1, save=save_1, plot_word_lang=plot_word_lang, plot_word=plot_word)
+        self._run_full_pipeline(self.dc, load=load_1, save=save_1, plot_word_lang=plot_word_lang, plot_word=plot_word,
+                                prediction_method=prediction_method)
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        self._run_full_pipeline(dc_new, load=load_2, save=save_2, plot_word_lang=plot_word_lang, plot_word=plot_word)
+        self._run_full_pipeline(dc_new, load=load_2, save=save_2, plot_word_lang=plot_word_lang, plot_word=plot_word,
+                                prediction_method=prediction_method)
 
         self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())
         for lang in self.dc.sds_by_lang.keys():
@@ -75,13 +79,19 @@ class TestDictionaryCreator(TestCase):
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(self.dc.evaluation_results, dc_new.evaluation_results)
 
-    def test_full_pipeline_without_loading_and_with_all_sds(self):
-        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False)
+    def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
+        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
+                                      prediction_method='link prediction')
 
-    def test_full_pipeline_with_loading_and_with_few_sds(self):
+    def test_full_pipeline_with_loading_and_with_few_sds_and_with_tfidf(self):
         self._run_full_pipeline_twice(load_1=False, save_1=True, load_2=True, save_2=False,
-                                      plot_word_lang='fra', plot_word='et',
+                                      plot_word_lang='fra', plot_word='et', prediction_method='tfidf',
                                       sd_path_prefix='test/data/semdom_qa_clean_short', check_isomorphism=True)
+
+    def test_create_dictionary_with_invalid_input(self):
+        with self.assertRaises(NotImplementedError):
+            self.dc.create_dictionary(save=True, load=False, plot_word_lang='eng', plot_word='drink',
+                                      prediction_method='invalid prediction method')
 
     def test_load_only_most_current_file(self):
         self.dc.evaluation_results = {
