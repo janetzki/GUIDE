@@ -5,14 +5,18 @@ from unittest import TestCase
 import networkx as nx
 
 from dictionary_creator import DictionaryCreator
+from word import Word
 
 
 class TestDictionaryCreator(TestCase):
     @staticmethod
-    def _create_dictionary_creator():
-        return DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
+    def _create_dictionary_creator(bids=None, sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
+        if bids is None:
+            bids = ['bid-eng-DBY-10', 'bid-fra-fob-10']
+        return DictionaryCreator(bids, score_threshold=0.2,
                                  state_files_path='test/data/0_state',
-                                 aligned_bibles_path='test/data/1_aligned_bibles')
+                                 aligned_bibles_path='test/data/1_aligned_bibles',
+                                 sd_path_prefix=sd_path_prefix)
 
     def setUp(self) -> None:
         # delete all files in test/data/1_aligned_bibles
@@ -26,6 +30,7 @@ class TestDictionaryCreator(TestCase):
             'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
             'bid-fra-fob-100': '../../../dictionary_creator/test/data/fra-fra_fob-100-verses.txt',
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
+            'bid-deu-10': '../../../dictionary_creator/test/data/deu-deuelo-10-verses.txt',
         })
         self.dc = TestDictionaryCreator._create_dictionary_creator()
         self.maxDiff = 100000
@@ -122,10 +127,10 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-fra-fob'), 'fra')
 
     def test__group_words_by_qid(self):
-        word_1 = DictionaryCreator.Word('moon', 'eng', {'1.1.1.1 1'})
-        word_2 = DictionaryCreator.Word('lunar', 'eng', {'1.1.1.1 1'})
-        word_3 = DictionaryCreator.Word('star', 'eng', {'1.1.1.2 1'})
-        word_4 = DictionaryCreator.Word('moon star', 'eng', {'1.1.1.1 1', '1.1.1.2 1'})
+        word_1 = Word('moon', 'eng', {'1.1.1.1 1'})
+        word_2 = Word('lunar', 'eng', {'1.1.1.1 1'})
+        word_3 = Word('star', 'eng', {'1.1.1.2 1'})
+        word_4 = Word('moon star', 'eng', {'1.1.1.1 1', '1.1.1.2 1'})
 
         self.assertEqual(DictionaryCreator._group_words_by_qid({
             'moon': word_1,
@@ -137,8 +142,11 @@ class TestDictionaryCreator(TestCase):
             '1.1.1.2 1': ['star', 'moon star'],
         })
 
-    # def test__transliterate_word(self):
-    #     self.fail()
+    def test__transliterate_word(self):
+        self.assertEqual('chandrma', DictionaryCreator._transliterate_word(self._create_word('चंद्रमा', 'hin')))
+        self.assertEqual('nkshatr', DictionaryCreator._transliterate_word(self._create_word('नक्षत्र', 'hin')))
+        self.assertEqual('grh', DictionaryCreator._transliterate_word(self._create_word('ग्रह', 'hin')))
+        self.assertEqual('surya', DictionaryCreator._transliterate_word(self._create_word('सूर्य', 'hin')))
 
     # def test__apply_prediction(self):
     #     self.fail()
@@ -154,8 +162,40 @@ class TestDictionaryCreator(TestCase):
         # should not fail
         self.dc._load_state()
 
-    # def test__load_data(self):
-    #     self.fail()
+    def test__load_data(self):
+        self.dc._load_data()
+
+        self.assertEqual({'eng', 'fra'}, self.dc.sds_by_lang.keys())
+        self.assertEqual(7955, len(self.dc.sds_by_lang['eng']))
+        self.assertEqual(7812, len(self.dc.sds_by_lang['fra']))
+
+        self.assertEqual({'bid-eng-DBY-10', 'bid-fra-fob-10'}, self.dc.verses_by_bid.keys())
+        self.assertEqual('In the beginning God created the heavens and the earth.\n',
+                         self.dc.verses_by_bid['bid-eng-DBY-10'][0])
+        self.assertEqual('Au commencement, Dieu créa les cieux et la terre.\n',
+                         self.dc.verses_by_bid['bid-fra-fob-10'][0])
+
+    def test__load_data_with_missing_sds(self):
+        self.dc = self._create_dictionary_creator(['bid-eng-DBY-10', 'bid-deu-10'],
+                                                  sd_path_prefix='test/data/semdom_qa_clean_short')
+
+        self.dc._load_data()
+
+        self.assertEqual({'eng', 'deu'}, self.dc.sds_by_lang.keys())
+        self.assertEqual(9, len(self.dc.sds_by_lang['eng']))
+        self.assertEqual(0, len(self.dc.sds_by_lang['deu']))
+
+        self.assertEqual({'bid-eng-DBY-10', 'bid-deu-10'}, self.dc.verses_by_bid.keys())
+        self.assertEqual('In the beginning God created the heavens and the earth.\n',
+                         self.dc.verses_by_bid['bid-eng-DBY-10'][0])
+        self.assertEqual('Im Anfang schuf Gott die Himmel und die Erde.\n', self.dc.verses_by_bid['bid-deu-10'][0])
+
+    def test__load_data_with_invalid_path(self):
+        self.dc.bids = ['bid-eng-DBY', 'bid-fra-fob']
+        self.dc.sd_path_prefix = 'test/data/invalid_path'
+
+        with self.assertRaises(FileNotFoundError):
+            self.dc._load_data()
 
     # def test__build_sds(self):
     #     self.fail()
@@ -240,7 +280,7 @@ class TestDictionaryCreator(TestCase):
     #     self.fail()
 
     def _create_word(self, text, lang, qids=None, occurrences_in_bible=1):
-        word = DictionaryCreator.Word(text, lang, qids, occurrences_in_bible)
+        word = Word(text, lang, qids, occurrences_in_bible)
         self.dc.words_by_text_by_lang[lang][text] = word
         return word
 
