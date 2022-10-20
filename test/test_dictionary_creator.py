@@ -17,7 +17,7 @@ class TestDictionaryCreator(TestCase):
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
         })
 
-        self.dc = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+        self.dc = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
                                     state_files_path='test/data/0_state')
         self.maxDiff = 100000
 
@@ -37,7 +37,7 @@ class TestDictionaryCreator(TestCase):
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
                                  sd_path_prefix=None, check_isomorphism=False):
         time.sleep(1)
-        dc_new = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+        dc_new = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
                                    state_files_path='test/data/0_state')
 
         if sd_path_prefix is not None:
@@ -62,8 +62,8 @@ class TestDictionaryCreator(TestCase):
                                              edge_match=lambda x, y: x['weight'] == y['weight']))
         self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
         self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
-        self.assertEqual(sorted(self.dc.strength_by_lang_by_word.items(), key=lambda x: str(x)),
-                         sorted(dc_new.strength_by_lang_by_word.items(), key=lambda x: str(x)))
+        self.assertEqual(sorted(self.dc.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)),
+                         sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(self.dc.evaluation_results, dc_new.evaluation_results)
 
@@ -84,7 +84,7 @@ class TestDictionaryCreator(TestCase):
         del self.dc.evaluation_results['eng']
 
         time.sleep(1)
-        self.dc = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+        self.dc = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
                                     state_files_path='test/data/0_state')
         self.dc.evaluation_results = {
             'fra': {'precision': 0.3}
@@ -94,7 +94,7 @@ class TestDictionaryCreator(TestCase):
         del self.dc.evaluation_results['fra']
 
         time.sleep(1)
-        self.dc = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+        self.dc = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
                                     state_files_path='test/data/0_state')
         self.dc._load_state()
         self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results)
@@ -128,11 +128,13 @@ class TestDictionaryCreator(TestCase):
     # def test__weighted_resource_allocation_index(self):
     #     self.fail()
 
-    # def test__save_state(self):
-    #     self.fail()
+    def test__save_state(self):
+        # should not fail
+        self.dc._save_state()
 
-    # def test__load_state(self):
-    #     self.fail()
+    def test__load_state(self):
+        # should not fail
+        self.dc._load_state()
 
     # def test__load_data(self):
     #     self.fail()
@@ -290,11 +292,38 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['boire'].display_text, 'BOIRE (3)')
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['eau'].display_text, 'EAU (2)')
 
-    # def test_predict_links(self):
-    #     self.fail()
+    def test_predict_links(self):
+        self.dc.predict_links()
 
-    # def test_train_tfidf_based_model(self):
-    #     self.fail()
+    #        self.fail()
+
+    def test_train_tfidf_based_model(self):
+        self.dc.aligned_wtxts_by_qid_by_lang_by_lang = {
+            'eng': {
+                'eng': {
+                    '4.9.6 1': ', heaven, and, heaven',
+                    '1.2 1': ', earth, earth, earth',
+                }
+            },
+            'fra': {
+                'eng': {
+                    '1.2.3 1': ', eaux, eaux, les, eaux, les, eaux, les, eaux, avec, les, eaux, les, eaux, eaux',
+                    '8.3.3.2 6': ', ténèbres, ténèbres, ténèbres',
+                }
+            }
+        }
+
+        self.dc.train_tfidf_based_model()
+
+        self.assertEqual({
+            'eng': {'1.2 1': {'earth': 1.0},
+                    '4.9.6 1': {'and': 0.447213595499958,
+                                'heaven': 0.894427190999916}},
+            'fra': {'1.2.3 1': {'avec': 0.10540925533894598,
+                                'eaux': 0.8432740427115678,
+                                'les': 0.5270462766947299},
+                    '8.3.3.2 6': {'ténèbres': 1.0}}
+        }, self.dc.top_scores_by_qid_by_lang)
 
     # def test__filter_target_sds_with_threshold(self):
     #     self.fail()

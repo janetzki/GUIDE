@@ -46,7 +46,7 @@ class DictionaryCreator(object):
             return NotImplemented
 
         def __hash__(self):
-            return hash((self.text, self.iso_language))
+            return hash((self.iso_language, self.text))
 
         def __str__(self):
             return f'{self.iso_language}: {self.text}'
@@ -76,7 +76,7 @@ class DictionaryCreator(object):
                 aligned_word.add_aligned_word(self, count)
             del words_by_text_by_lang[lang][removed_word.text]
 
-        def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_word):
+        def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_wtxt_by_lang, changed_variables):
             # todo: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
             self.display_text = f'{self.text.upper()} ({len(words) + 1})'
             for word in words:
@@ -85,9 +85,11 @@ class DictionaryCreator(object):
                 self.occurrences_in_bible += word.occurrences_in_bible
                 self._aligned_words += word._aligned_words
                 self._update_aligned_words(word.iso_language, word, words_by_text_by_lang)
-                strength_by_lang_by_word.pop(word, None)  # remove cache entry
+                strength_by_lang_by_wtxt_by_lang[word.iso_language].pop(word.text, None)  # remove cache entry
             self._update_aligned_words(self.iso_language, self, words_by_text_by_lang)
-            strength_by_lang_by_word.pop(self, None)  # remove cache entry
+            strength_by_lang_by_wtxt_by_lang[self.iso_language].pop(self.text, None)  # remove cache entry
+            changed_variables.add('words_by_text_by_lang')
+            changed_variables.add('strength_by_lang_by_wtxt_by_lang')
 
     BIBLES_BY_BID = {
         'bid-eng-asvbt': 'eng-engasvbt.txt',
@@ -145,7 +147,7 @@ class DictionaryCreator(object):
 
     def __init__(self, bids, score_threshold=0.5, state_files_path='data/0_state',
                  sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
-        self.bids = list(bids)
+        self.bids = bids
         self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
         self.source_bid = self.bids[0]
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
@@ -180,8 +182,8 @@ class DictionaryCreator(object):
         self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
         self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
 
-        # Not saved data (predicting links)
-        self.strength_by_lang_by_word = defaultdict(lambda: defaultdict(float))
+        # Saved data (predicting links)
+        self.strength_by_lang_by_wtxt_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
 
         # Saved data (training)
         self.top_scores_by_qid_by_lang = defaultdict(dict)
@@ -302,7 +304,7 @@ class DictionaryCreator(object):
         for variable_name in ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang', 'question_by_qid_by_lang',
                               'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang',
                               'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
-                              'top_scores_by_qid_by_lang', 'evaluation_results']:
+                              'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang', 'evaluation_results']:
             variable = getattr(self, variable_name)
             if type(variable) is dict or type(variable) is defaultdict:
                 # get all matching file names in directory
@@ -724,12 +726,14 @@ class DictionaryCreator(object):
 
     def _compute_sum_of_weights(self, word_1, lang_2):
         # compute sum of weights from word_1 to target_lang words in neighbors of word_1
-        # precompute strength sums to improve performance --> store them in cache self.strength_by_lang_by_word
-        if lang_2 not in self.strength_by_lang_by_word[word_1]:
-            self.strength_by_lang_by_word[word_1][lang_2] = sum(self.word_graph.get_edge_data(word_1, w)['weight']
-                                                                for w in self.word_graph.neighbors(word_1)
-                                                                if w.iso_language == lang_2)
-        return self.strength_by_lang_by_word[word_1][lang_2]
+        # precompute strength sums to improve performance --> store them in cache self.strength_by_lang_by_wtxt_by_lang
+        if lang_2 not in self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text]:
+            self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text][lang_2] = sum(
+                self.word_graph.get_edge_data(word_1, w)['weight']
+                for w in self.word_graph.neighbors(word_1)
+                if w.iso_language == lang_2)
+            self.changed_variables.add('strength_by_lang_by_wtxt_by_lang')
+        return self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text][lang_2]
 
     def _compute_link_score(self, word_1, word_2):
         # normalized edge weight = divide edge weight by the average sum of edge weights to words of the other language
@@ -860,7 +864,7 @@ class DictionaryCreator(object):
 
                 # contract words in the graph (i.e., merge all grouped lemma nodes into a single lemma group node)
                 base_lemma_word.merge_words(lemma_group_words, self.words_by_text_by_lang,
-                                            self.strength_by_lang_by_word)
+                                            self.strength_by_lang_by_wtxt_by_lang, self.changed_variables)
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
         self.changed_variables.add('words_by_text_by_lang')
 
@@ -1183,13 +1187,13 @@ class DictionaryCreator(object):
         self._predict_lemmas(load=load, save=save)
         self._contract_lemmas(load=load, save=save)
         self.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
-        self.predict_links(load=load, save=save)
+        # self.predict_links(load=load, save=save)
         self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=1)
 
-        # dc.train_tfidf_based_model(load=load, save=save)
+        self.train_tfidf_based_model(load=load, save=save)
         self.evaluate(load=load, save=save, print_reciprocal_ranks=False)
 
 
 if __name__ == '__main__':
-    dc = DictionaryCreator({'bid-eng-DBY', 'bid-fra-fob'}, score_threshold=0.2)
+    dc = DictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
     dc.create_dictionary()
