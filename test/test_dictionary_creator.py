@@ -1,3 +1,4 @@
+import os
 import time
 from unittest import TestCase
 
@@ -7,7 +8,17 @@ from dictionary_creator import DictionaryCreator
 
 
 class TestDictionaryCreator(TestCase):
+    @staticmethod
+    def _create_dictionary_creator():
+        return DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
+                                 state_files_path='test/data/0_state',
+                                 aligned_bibles_path='test/data/1_aligned_bibles')
+
     def setUp(self) -> None:
+        # delete all files in test/data/1_aligned_bibles
+        for file in os.listdir('test/data/1_aligned_bibles'):
+            os.remove('test/data/1_aligned_bibles/' + file)
+
         DictionaryCreator.BIBLES_BY_BID.update({
             'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
             'bid-eng-DBY-100': '../../../dictionary_creator/test/data/eng-engDBY-100-verses.txt',
@@ -16,9 +27,7 @@ class TestDictionaryCreator(TestCase):
             'bid-fra-fob-100': '../../../dictionary_creator/test/data/fra-fra_fob-100-verses.txt',
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
         })
-
-        self.dc = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
-                                    state_files_path='test/data/0_state')
+        self.dc = TestDictionaryCreator._create_dictionary_creator()
         self.maxDiff = 100000
 
     def _check_if_edge_weights_doubled(self):
@@ -37,8 +46,7 @@ class TestDictionaryCreator(TestCase):
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
                                  sd_path_prefix=None, check_isomorphism=False):
         time.sleep(1)
-        dc_new = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
-                                   state_files_path='test/data/0_state')
+        dc_new = TestDictionaryCreator._create_dictionary_creator()
 
         if sd_path_prefix is not None:
             self.dc.sd_path_prefix = sd_path_prefix
@@ -84,8 +92,8 @@ class TestDictionaryCreator(TestCase):
         del self.dc.evaluation_results['eng']
 
         time.sleep(1)
-        self.dc = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
-                                    state_files_path='test/data/0_state')
+        self.dc = TestDictionaryCreator._create_dictionary_creator()
+
         self.dc.evaluation_results = {
             'fra': {'precision': 0.3}
         }
@@ -94,8 +102,8 @@ class TestDictionaryCreator(TestCase):
         del self.dc.evaluation_results['fra']
 
         time.sleep(1)
-        self.dc = DictionaryCreator(['bid-eng-DBY-10', 'bid-fra-fob-10'], score_threshold=0.2,
-                                    state_files_path='test/data/0_state')
+        self.dc = TestDictionaryCreator._create_dictionary_creator()
+
         self.dc._load_state()
         self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results)
 
@@ -149,11 +157,36 @@ class TestDictionaryCreator(TestCase):
     # def test__tokenize_verses(self):
     #     self.fail()
 
-    # def test__combine_alignments(self):
-    #     self.fail()
+    def test__combine_alignments(self):
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
+                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
+                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
+                 'face', 'of', 'the', 'water', '.'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
+                ['or', 'la', 'terre', 'était', 'informe', 'et', 'vide', ',', 'et', 'les', 'ténèbres', 'étaient',
+                 'à', 'la', 'surface', 'de', 'l', "'", 'abîme', ',', 'et', 'l', "'", 'esprit', 'de', 'dieu', 'se',
+                 'mouvait', 'sur', 'les', 'eaux', '.'],
+                [],
+                [],
+            ],
+        }
 
-    # def test_preprocess_data(self):
-    #     self.fail()
+        self.dc._combine_alignments()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
+
+    def test_preprocess_data(self):
+        self.dc.preprocess_data()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
 
     # def test__add_directed_edge(self):
     #     self.fail()

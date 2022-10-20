@@ -145,7 +145,9 @@ class DictionaryCreator(object):
         'bid-swp': 'no semdoms available/swp-swp.txt',
     }
 
-    def __init__(self, bids, score_threshold=0.5, state_files_path='data/0_state',
+    def __init__(self, bids, score_threshold=0.5,
+                 state_files_path='data/0_state',
+                 aligned_bibles_path='data/1_aligned_bibles',
                  sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
         self.bids = bids
         self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
@@ -154,8 +156,8 @@ class DictionaryCreator(object):
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
             ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
-        self.data_path = 'data'
         self.state_files_path = state_files_path
+        self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
         self.eng_lemmatizer = WordNetLemmatizer()
         self.vectorizer = TfidfVectorizer()
@@ -468,12 +470,12 @@ class DictionaryCreator(object):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
 
-                aligned_bibles_file_path = f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align'
+                aligned_bibles_file_path = f'{self.aligned_bibles_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align'
                 if os.path.isfile(aligned_bibles_file_path):
                     print(f'Skipped: Aligned bibles file {aligned_bibles_file_path} already exists')
                     continue
 
-                combined_bibles_file_path = f'{self.data_path}/{bid_1}_{bid_2}_{self.tokenizer}.txt'
+                combined_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}.txt'
                 with open(combined_bibles_file_path, 'w') as combined_bibles:
                     for idx, (bid_1_wtxts, bid_2_wtxts) in tqdm(enumerate(
                             zip(self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2])),
@@ -489,8 +491,9 @@ class DictionaryCreator(object):
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
 
-                result = subprocess.run(['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer],
-                                        capture_output=True, text=True)
+                result = subprocess.run(
+                    ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer, self.aligned_bibles_path],
+                    capture_output=True, text=True)
                 # retrieve the final entropy and perplexity
                 matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
                 cross_entropy = float(matches.group(2))
@@ -573,7 +576,8 @@ class DictionaryCreator(object):
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
-                with open(f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align', 'r') as alignment_file:
+                with open(f'{self.aligned_bibles_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align',
+                          'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
@@ -1081,7 +1085,7 @@ class DictionaryCreator(object):
 
     def _load_test_data(self, source_lang, target_lang):
         # load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation)
-        df_test = pd.read_csv(f'{self.data_path}/multilingual_semdom_dictionary.csv')
+        df_test = pd.read_csv(f'data/multilingual_semdom_dictionary.csv')
         df_test = df_test[[f'{source_lang}-000.txt', f'{target_lang}-000.txt']]
         df_test.columns = ['source_wtxt', 'target_wtxts']
         df_test = df_test[df_test['target_wtxts'].notna()]
