@@ -293,7 +293,7 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['boire'].display_text, 'BOIRE (3)')
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['eau'].display_text, 'EAU (2)')
 
-    def test_predict_links(self):
+    def test_predict_links_in_2_languages(self):
         self._initialize_5_german_words()
 
         self.dc.build_word_graph()
@@ -329,21 +329,85 @@ class TestDictionaryCreator(TestCase):
                 }}
         }, dict(self.dc.top_scores_by_qid_by_lang))
 
-        # link_candidates = [
-        #     (self.words_by_text_by_lang['fra']['eau'],
-        #      self.words_by_text_by_lang['deu']['wasser']),
-        #     (self.words_by_text_by_lang['eng']['water'],
-        #      self.words_by_text_by_lang['deu']['wasser']),
-        #     (self.words_by_text_by_lang['eng']['water'],
-        #      self.words_by_text_by_lang['fra']['eau']),
-        #
-        #     (self.words_by_text_by_lang['fra']['boire'],
-        #      self.words_by_text_by_lang['deu']['trinken']),
-        #     (self.words_by_text_by_lang['eng']['drink'],
-        #      self.words_by_text_by_lang['deu']['trinken']),
-        #     (self.words_by_text_by_lang['eng']['drink'],
-        #      self.words_by_text_by_lang['fra']['boire']),
-        # ]
+    def test_predict_links_in_3_languages(self):
+        self.dc.target_langs = ['eng', 'fra', 'deu']
+
+        eng_word_1 = self._create_word('drink', 'eng', {'5.2.2.7 Drink 1', '5.2.3.6 Beverage 1'}, 3)
+        eng_word_2 = self._create_word('water', 'eng', {'1.2.3 Solid, liquid, gas 2'}, 2)
+        eng_word_3 = self._create_word('the', 'eng', {'9.2.3.5 Demonstrative pronouns 1'}, 100)
+        fra_word_1 = self._create_word('boire', 'fra', None, 3)
+        fra_word_2 = self._create_word('eau', 'fra', None, 5)
+        fra_word_3 = self._create_word('les', 'fra', None, 100)
+        deu_word_1 = self._create_word('trinken', 'deu', None, 3)
+        deu_word_2 = self._create_word('wasser', 'deu', None, 2)
+        deu_word_3 = self._create_word('die', 'deu', None, 100)
+
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1, deu_word_1, 10)
+        self.dc._add_bidirectional_edge(fra_word_1, deu_word_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_2, deu_word_2, 10)
+        self.dc._add_bidirectional_edge(fra_word_2, deu_word_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_3, fra_word_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_3, deu_word_3, 10)
+        self.dc._add_bidirectional_edge(fra_word_3, deu_word_3, 10)
+
+        # add some noise
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(eng_word_1, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(eng_word_2, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_1, eng_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_1, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_2, eng_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_2, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_1, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_1, eng_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_2, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_2, eng_word_3, 2)
+
+        self.dc.build_word_graph()
+        self.dc.predict_links()
+        self.dc.plot_subgraph('eng', 'the')
+
+        self.assertDictEqual({
+            'deu': {
+                '1.2.3 Solid, liquid, gas 2': {
+                    'wasser': 0.8333333333333334,
+                    'die': 0.15384615384615385,
+                },
+                '5.2.2.7 Drink 1': {
+                    'trinken': 0.8333333333333334,
+                    'die': 0.15384615384615385,
+                },
+                '5.2.3.6 Beverage 1': {
+                    'trinken': 0.8333333333333334,
+                    'die': 0.15384615384615385,
+                },
+                '9.2.3.5 Demonstrative pronouns 1': {
+                    'die': 0.7142857142857143,
+                    'trinken': 0.15384615384615385,
+                    'wasser': 0.15384615384615385
+                }},
+            'fra': {
+                '1.2.3 Solid, liquid, gas 2': {
+                    'eau': 0.8333333333333334,
+                    'les': 0.15384615384615385,
+                },
+                '5.2.2.7 Drink 1': {
+                    'boire': 0.8333333333333334,
+                    'les': 0.15384615384615385,
+                },
+                '5.2.3.6 Beverage 1': {
+                    'boire': 0.8333333333333334,
+                    'les': 0.15384615384615385,
+                },
+                '9.2.3.5 Demonstrative pronouns 1': {
+                    'les': 0.7142857142857143,
+                    'boire': 0.15384615384615385,
+                    'eau': 0.15384615384615385,
+                }}
+        }, dict(self.dc.top_scores_by_qid_by_lang))
 
     def test_train_tfidf_based_model(self):
         self.dc.aligned_wtxts_by_qid_by_lang_by_lang = {
