@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 from collections import defaultdict, Counter
+from datetime import datetime
 
 import dill
 import matplotlib.patches as mpatches
@@ -88,22 +89,79 @@ class DictionaryCreator(object):
             self._update_aligned_words(self.iso_language, self, words_by_text_by_lang)
             strength_by_lang_by_word.pop(self, None)  # remove cache entry
 
-    def __init__(self, bibles_by_bid, score_threshold=0.5, sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
-        self.bibles_by_bid = bibles_by_bid
-        self.bids = list(bibles_by_bid.keys())
+    BIBLES_BY_BID = {
+        'bid-eng-asvbt': 'eng-engasvbt.txt',
+        'bid-eng-asv': 'eng-eng-asv.txt',
+        'bid-eng-BBE': 'eng-engBBE.txt',
+        'bid-eng-Brenton': 'eng-eng-Brenton.txt',
+        'bid-eng-DBY': 'eng-engDBY.txt',
+        'bid-eng-DRA': 'eng-engDRA.txt',
+        'bid-eng-gnv': 'eng-enggnv.txt',
+        'bid-eng-jps': 'eng-engjps.txt',
+        'bid-eng-kjv2006': 'eng-eng-kjv2006.txt',
+        'bid-eng-kjvcpb': 'eng-engkjvcpb.txt',
+        'bid-eng-kjv': 'eng-eng-kjv.txt',
+        'bid-eng-lee': 'eng-englee.txt',
+        'bid-eng-lxx2012': 'eng-eng-lxx2012.txt',
+        'bid-eng-lxxup': 'eng-englxxup.txt',
+        'bid-eng-noy': 'eng-engnoy.txt',
+        'bid-eng-oebcw': 'eng-engoebcw.txt',
+        'bid-eng-oebus': 'eng-engoebus.txt',
+        'bid-eng-oke': 'eng-engoke.txt',
+        'bid-eng-rv': 'eng-eng-rv.txt',
+        'bid-eng-tnt': 'eng-engtnt.txt',
+        'bid-eng-uk-lxx2012': 'eng-eng-uk-lxx2012.txt',
+        'bid-eng-webbe': 'eng-eng-webbe.txt',
+        'bid-eng-web-c': 'eng-eng-web-c.txt',
+        'bid-eng-webpb': 'eng-engwebpb.txt',
+        'bid-eng-webp': 'eng-engwebp.txt',
+        'bid-eng-webster': 'eng-engwebster.txt',
+        'bid-eng-web': 'eng-eng-web.txt',
+        'bid-eng-wmbb': 'eng-engwmbb.txt',
+        'bid-eng-wmb': 'eng-engwmb.txt',
+        'bid-eng-Wycliffe': 'eng-engWycliffe.txt',
+        'bid-eng-ylt': 'eng-engylt.txt',
+        'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
+        'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
+        'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
+
+        'bid-fra-fob': 'fra-fra_fob.txt',
+        'bid-fra-lsg': 'fra-fraLSG.txt',
+
+        'bid-spa': 'spa-spaRV1909.txt',
+        'bid-ind': 'ind-ind.txt',
+        'bid-tel': 'tel-telirv.txt',
+        'bid-tha': 'tha-thaKJV.txt',
+        'bid-hin': 'hin-hinirv.txt',
+        'bid-nep': 'nep-nepulb.txt',
+        'bid-urd': 'urd-urdgvu.txt',
+
+        'bid-deu': 'no semdoms available/deu-deuelo.txt',
+        'bid-rus': 'no semdoms available/rus-russyn.txt',
+        'bid-vie': 'no semdoms available/vie-vie1934.txt',
+        'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
+        'bid-swp': 'no semdoms available/swp-swp.txt',
+    }
+
+    def __init__(self, bids, score_threshold=0.5, state_files_path='data/0_state',
+                 sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
+        self.bids = list(bids)
+        self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
         self.source_bid = self.bids[0]
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
             ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
         self.data_path = 'data'
-        self.state_files_path = os.path.join(self.data_path, '0_state')
+        self.state_files_path = state_files_path
         self.tokenizer = 'bpe'
         self.eng_lemmatizer = WordNetLemmatizer()
         self.vectorizer = TfidfVectorizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
         self.sd_path_prefix = sd_path_prefix
+        self.timestamp_format = '%Y-%m-%d-%H-%M-%S'
+        self.start_timestamp = datetime.now().strftime(self.timestamp_format)
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -128,6 +186,9 @@ class DictionaryCreator(object):
         # Saved data (training)
         self.top_scores_by_qid_by_lang = defaultdict(dict)
 
+        # Saved data (evaluation)
+        self.evaluation_results = defaultdict(dict)
+
         # Stores which variables have changed since they have last been saved to a file
         self.changed_variables = set()
 
@@ -150,15 +211,13 @@ class DictionaryCreator(object):
         return word.display_text
 
     @staticmethod
-    def _apply_prediction(graph, func, ebunch=None):
+    def _apply_prediction(func, ebunch):
         """Applies the given function to each edge in the specified iterable
         of edges.
         """
-        if ebunch is None:
-            ebunch = nx.non_edges(graph)
         return ((u, v, func(u, v)) for u, v in ebunch)
 
-    def _weighted_resource_allocation_index(self, ebunch=None):
+    def _weighted_resource_allocation_index(self, ebunch):
         r"""Compute the weighted resource allocation index of all node pairs in ebunch.
 
         References
@@ -178,14 +237,14 @@ class DictionaryCreator(object):
                        if
                        word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore eng-eng-eng edges
 
-        return DictionaryCreator._apply_prediction(self.word_graph, predict, ebunch)
+        return DictionaryCreator._apply_prediction(predict, ebunch)
 
     def _save_state(self):
         if len(self.changed_variables) == 0:
             return
         print('Saving state...')
 
-        # save newly changed class variables to a separate dill file
+        # save newly changed class variables to a separate dill file to speed up saving
         for variable_name in tqdm(self.changed_variables,
                                   desc='Saving class variables',
                                   total=len(self.changed_variables)):
@@ -193,9 +252,10 @@ class DictionaryCreator(object):
 
             def save_file(key=''):
                 if key:
-                    file_path = os.path.join(self.state_files_path, f'{variable_name}_{key}.dill')
+                    file_path = os.path.join(self.state_files_path,
+                                             f'{self.start_timestamp}_{variable_name}_{key}.dill')
                 else:
-                    file_path = os.path.join(self.state_files_path, f'{variable_name}.dill')
+                    file_path = os.path.join(self.state_files_path, f'{self.start_timestamp}_{variable_name}.dill')
 
                 # make a backup copy
                 # os.system(f'cp {file_path} {file_path}')
@@ -219,23 +279,35 @@ class DictionaryCreator(object):
         self.changed_variables.clear()
         print('State saved.')
 
+    def _find_most_recent_files(self):
+        # file format: {start_timestamp}_{variable_name}_{key}.dill
+        file_names = os.listdir(os.path.join(self.state_files_path))
+        timestamps = [file_name.split('_')[0] for file_name in file_names]
+        timestamps = [datetime.strptime(timestamp, self.timestamp_format) for timestamp in timestamps]
+        timestamps.sort()
+        most_recent_timestamp = timestamps[-1].strftime(self.timestamp_format)
+        assert (
+                    most_recent_timestamp < self.start_timestamp)  # This dc should be newer than any other dc, and we do not need to load the own state.
+        return [file_name for file_name in file_names if file_name.startswith(most_recent_timestamp)]
+
     def _load_state(self):
         if self.state_loaded:
             return
 
         print('Loading state...')
 
+        most_recent_files = self._find_most_recent_files()
+
         # load class variables from separate dill files
         for variable_name in ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang', 'question_by_qid_by_lang',
                               'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang',
                               'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
-                              'top_scores_by_qid_by_lang']:
+                              'top_scores_by_qid_by_lang', 'evaluation_results']:
             variable = getattr(self, variable_name)
             if type(variable) is dict or type(variable) is defaultdict:
                 # get all matching file names in directory
-                file_names = os.listdir(os.path.join(self.state_files_path))
-                file_paths = [os.path.join(self.state_files_path, file_name) for file_name in file_names if
-                              file_name.startswith(variable_name)]
+                file_paths = [os.path.join(self.state_files_path, file_name) for file_name in most_recent_files if
+                              '_'.join(file_name.split('_')[1:]).startswith(variable_name)]
 
                 for file_path in file_paths:
                     def load_file(fallback_value):
@@ -1073,11 +1145,11 @@ class DictionaryCreator(object):
         print(f'MRR: {mean_reciprocal_rank:.3f}')
         return mean_reciprocal_rank
 
-    def evaluate(self, load=False, print_reciprocal_ranks=False):
+    def evaluate(self, save=False, load=False, print_reciprocal_ranks=False):
         if load:
             self._load_state()
+
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
-        results = dict()
         print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:
             print(f'\n\n--- Evaluation for {target_lang} ---')
@@ -1090,7 +1162,7 @@ class DictionaryCreator(object):
             precision, recall, f1, recall_adjusted, f1_adjusted = self._compute_f1_score(predicted_target_wtxts_by_qid,
                                                                                          target_lang)
             mean_reciprocal_rank = self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
-            results[target_lang] = {
+            self.evaluation_results[target_lang] = {
                 'precision': precision,
                 'recall': recall,
                 'F1': f1,
@@ -1098,79 +1170,26 @@ class DictionaryCreator(object):
                 'F1*': f1_adjusted,
                 'MRR': mean_reciprocal_rank
             }
-        return results
+            self.changed_variables.add('evaluation_results')
+
+        if save:
+            self._save_state()
+
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink'):
+        self.preprocess_data(load=load, save=save)
+        self.map_words_to_qids(load=load, save=save)
+
+        self.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
+        self._predict_lemmas(load=load, save=save)
+        self._contract_lemmas(load=load, save=save)
+        self.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
+        self.predict_links(load=load, save=save)
+        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=1)
+
+        # dc.train_tfidf_based_model(load=load, save=save)
+        self.evaluate(load=load, save=save, print_reciprocal_ranks=False)
 
 
 if __name__ == '__main__':
-    dc = DictionaryCreator(bibles_by_bid={
-        # 'bid-eng-asvbt': 'eng-engasvbt.txt',
-        # 'bid-eng-asv': 'eng-eng-asv.txt',
-        # 'bid-eng-BBE': 'eng-engBBE.txt',
-        # 'bid-eng-Brenton': 'eng-eng-Brenton.txt',
-        'bid-eng-DBY': 'eng-engDBY.txt',
-        # 'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
-        # 'bid-eng-DRA': 'eng-engDRA.txt',
-        # 'bid-eng-gnv': 'eng-enggnv.txt',
-        # 'bid-eng-jps': 'eng-engjps.txt',
-        # 'bid-eng-kjv2006': 'eng-eng-kjv2006.txt',
-        # 'bid-eng-kjvcpb': 'eng-engkjvcpb.txt',
-        # 'bid-eng-kjv': 'eng-eng-kjv.txt',
-        # 'bid-eng-lee': 'eng-englee.txt',
-        # 'bid-eng-lxx2012': 'eng-eng-lxx2012.txt',
-        # 'bid-eng-lxxup': 'eng-englxxup.txt',
-        # 'bid-eng-noy': 'eng-engnoy.txt',
-        # 'bid-eng-oebcw': 'eng-engoebcw.txt',
-        # 'bid-eng-oebus': 'eng-engoebus.txt',
-        # 'bid-eng-oke': 'eng-engoke.txt',
-        # 'bid-eng-rv': 'eng-eng-rv.txt',
-        # 'bid-eng-tnt': 'eng-engtnt.txt',
-        # 'bid-eng-uk-lxx2012': 'eng-eng-uk-lxx2012.txt',
-        # 'bid-eng-webbe': 'eng-eng-webbe.txt',
-        # 'bid-eng-web-c': 'eng-eng-web-c.txt',
-        # 'bid-eng-webpb': 'eng-engwebpb.txt',
-        # 'bid-eng-webp': 'eng-engwebp.txt',
-        # 'bid-eng-webster': 'eng-engwebster.txt',
-        # 'bid-eng-web': 'eng-eng-web.txt',
-        # 'bid-eng-wmbb': 'eng-engwmbb.txt',
-        # 'bid-eng-wmb': 'eng-engwmb.txt',
-        # 'bid-eng-Wycliffe': 'eng-engWycliffe.txt',
-        # 'bid-eng-ylt': 'eng-engylt.txt',
-        # 'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
-        # 'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
-        # 'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
-
-        'bid-fra-fob': 'fra-fra_fob.txt',
-        # 'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
-        # 'bid-fra-lsg': 'fra-fraLSG.txt',
-
-        # 'bid-spa': 'spa-spaRV1909.txt',
-        # 'bid-ind': 'ind-ind.txt',
-        # 'bid-tel': 'tel-telirv.txt',
-        # 'bid-tha': 'tha-thaKJV.txt',
-        # 'bid-hin': 'hin-hinirv.txt',
-        # 'bid-nep': 'nep-nepulb.txt',
-        # 'bid-urd': 'urd-urdgvu.txt',
-
-        # 'bid-deu': 'no semdoms available/deu-deuelo.txt',
-        # 'bid-rus': 'no semdoms available/rus-russyn.txt',,
-        # 'bid-vie': 'no semdoms available/vie-vie1934.txt',
-        # 'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
-        # 'bid-swp': 'no semdoms available/swp-swp.txt',
-    }, score_threshold=0.2)
-
-    load = False
-    save = False
-    dc.preprocess_data(load=load, save=save)
-    dc.map_words_to_qids(load=load, save=save)
-
-    dc.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
-    dc._predict_lemmas(load=load, save=save)
-    dc._save_state()
-    dc._contract_lemmas(load=load, save=save)
-    dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
-    dc.predict_links(load=load, save=save)
-    dc.plot_subgraph(lang='eng', text='drink', min_count=1)
-
-    # dc.train_tfidf_based_model(load=load, save=save)
-    dc.evaluate(load=load, print_reciprocal_ranks=False)
-    dc._save_state()
+    dc = DictionaryCreator({'bid-eng-DBY', 'bid-fra-fob'}, score_threshold=0.2)
+    dc.create_dictionary()

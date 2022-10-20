@@ -1,3 +1,4 @@
+import time
 from unittest import TestCase
 
 import networkx as nx
@@ -7,12 +8,17 @@ from dictionary_creator import DictionaryCreator
 
 class TestDictionaryCreator(TestCase):
     def setUp(self) -> None:
-        self.dc = DictionaryCreator(bibles_by_bid={
+        DictionaryCreator.BIBLES_BY_BID.update({
+            'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
+            'bid-eng-DBY-100': '../../../dictionary_creator/test/data/eng-engDBY-100-verses.txt',
             'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
+            'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
+            'bid-fra-fob-100': '../../../dictionary_creator/test/data/fra-fra_fob-100-verses.txt',
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
-        },
-            score_threshold=0.2,
-        )
+        })
+
+        self.dc = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+                                    state_files_path='test/data/0_state')
         self.maxDiff = 100000
 
     def _check_if_edge_weights_doubled(self):
@@ -23,38 +29,25 @@ class TestDictionaryCreator(TestCase):
                 return False
         return True
 
-    def _run_full_pipeline(self, dc, load, save):
-        dc.preprocess_data(load=load, save=save)
-        dc.map_words_to_qids(load=load, save=save)
-
-        dc.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
-        dc._predict_lemmas(load=load, save=save)
-        dc._contract_lemmas(load=load, save=save)
-        dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
-        dc.predict_links(load=load, save=save)
-        dc.plot_subgraph(lang='fra', text='et', min_count=3)
+    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink'):
+        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_word=plot_word)
         self.assertFalse(
             self._check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
-        # dc.train_tfidf_based_model(load=load, save=save)
-        return dc.evaluate(load=load, print_reciprocal_ranks=False)
-
-    def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, sd_path_prefix=None, check_isomorphism=False):
-        dc_new = DictionaryCreator(bibles_by_bid={
-            'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
-            'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
-        },
-            score_threshold=0.2,
-        )
+    def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
+                                 sd_path_prefix=None, check_isomorphism=False):
+        time.sleep(1)
+        dc_new = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+                                   state_files_path='test/data/0_state')
 
         if sd_path_prefix is not None:
             self.dc.sd_path_prefix = sd_path_prefix
             dc_new.sd_path_prefix = sd_path_prefix
 
         print('STARTING PIPELINE RUN 1/2')
-        evaluation_results_run_1 = self._run_full_pipeline(self.dc, load=load_1, save=save_1)
+        self._run_full_pipeline(self.dc, load=load_1, save=save_1, plot_word_lang=plot_word_lang, plot_word=plot_word)
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        evaluation_results_run_2 = self._run_full_pipeline(dc_new, load=load_2, save=save_2)
+        self._run_full_pipeline(dc_new, load=load_2, save=save_2, plot_word_lang=plot_word_lang, plot_word=plot_word)
 
         self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())
         for lang in self.dc.sds_by_lang.keys():
@@ -72,14 +65,39 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(sorted(self.dc.strength_by_lang_by_word.items(), key=lambda x: str(x)),
                          sorted(dc_new.strength_by_lang_by_word.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
-        self.assertDictEqual(evaluation_results_run_1, evaluation_results_run_2)
+        self.assertDictEqual(self.dc.evaluation_results, dc_new.evaluation_results)
 
-    def test_full_pipeline_with_loading(self):
+    def test_full_pipeline_without_loading_and_with_all_sds(self):
         self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False)
 
-    def test_full_pipeline_without_loading(self):
+    def test_full_pipeline_with_loading_and_with_few_sds(self):
         self._run_full_pipeline_twice(load_1=False, save_1=True, load_2=True, save_2=False,
+                                      plot_word_lang='fra', plot_word='et',
                                       sd_path_prefix='test/data/semdom_qa_clean_short', check_isomorphism=True)
+
+    def test_load_only_most_current_file(self):
+        self.dc.evaluation_results = {
+            'eng': {'precision': 0.5}
+        }
+        self.dc.changed_variables.add('evaluation_results')
+        self.dc._save_state()
+        del self.dc.evaluation_results['eng']
+
+        time.sleep(1)
+        self.dc = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+                                    state_files_path='test/data/0_state')
+        self.dc.evaluation_results = {
+            'fra': {'precision': 0.3}
+        }
+        self.dc.changed_variables.add('evaluation_results')
+        self.dc._save_state()
+        del self.dc.evaluation_results['fra']
+
+        time.sleep(1)
+        self.dc = DictionaryCreator({'bid-eng-DBY-10', 'bid-fra-fob-10'}, score_threshold=0.2,
+                                    state_files_path='test/data/0_state')
+        self.dc._load_state()
+        self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results)
 
     def test__convert_bid_to_lang(self):
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-eng-DBY'), 'eng')
@@ -288,15 +306,10 @@ class TestDictionaryCreator(TestCase):
     #     self.fail()
 
     def test__compute_mean_reciprocal_rank(self):
-        word_1 = DictionaryCreator.Word('moon', 'eng', {'1.1.1.1 1'})
-        word_2 = DictionaryCreator.Word('lunar', 'eng', {'1.1.1.1 1'})
-        word_3 = DictionaryCreator.Word('star', 'eng', {'1.1.1.2 1'})
-        word_4 = DictionaryCreator.Word('moon star', 'eng', {'1.1.1.1 1', '1.1.1.2 1'})
-
-        self.dc.words_by_text_by_lang['eng']['moon'] = word_1
-        self.dc.words_by_text_by_lang['eng']['lunar'] = word_2
-        self.dc.words_by_text_by_lang['eng']['star'] = word_3
-        self.dc.words_by_text_by_lang['eng']['moon star'] = word_4
+        self._create_word('moon', 'eng', {'1.1.1.1 1'})
+        self._create_word('lunar', 'eng', {'1.1.1.1 1'})
+        self._create_word('star', 'eng', {'1.1.1.2 1'})
+        self._create_word('moon star', 'eng', {'1.1.1.1 1', '1.1.1.2 1'})
 
         self.dc.question_by_qid_by_lang['eng']['1.1.1.1 1'] = 'What words refer to the moon?'
         self.dc.question_by_qid_by_lang['eng']['1.1.1.2 1'] = 'What words are used to refer to the stars?'
