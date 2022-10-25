@@ -2,8 +2,9 @@ import math
 import os
 import re
 import subprocess
+import time
 from collections import defaultdict
-from datetime import datetime
+from pickle import UnpicklingError
 
 import dill
 import matplotlib.patches as mpatches
@@ -100,8 +101,7 @@ class DictionaryCreator(object):
         self.state_loaded = False
         self.score_threshold = score_threshold
         self.sd_path_prefix = sd_path_prefix
-        self.timestamp_format = '%Y-%m-%d-%H-%M-%S'
-        self.start_timestamp = datetime.now().strftime(self.timestamp_format)
+        self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -113,7 +113,7 @@ class DictionaryCreator(object):
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
 
-        # Not saved data (plotting) todo: save this data because we use it for computation, too
+        # Saved data (graph building)
         self.word_graph = None
 
         # Saved data (lemmas)
@@ -127,7 +127,7 @@ class DictionaryCreator(object):
         self.top_scores_by_qid_by_lang = defaultdict(dict)
 
         # Saved data (evaluation)
-        self.evaluation_results = defaultdict(dict)
+        self.evaluation_results_by_lang = defaultdict(dict)
 
         # Stores which variables have changed since they have last been saved to a file
         self.changed_variables = set()
@@ -203,15 +203,15 @@ class DictionaryCreator(object):
                     else:
                         dill.dump(variable, state_file)
 
-            # if type(variable) is dict or type(variable) is defaultdict:
-            for key, value in tqdm(variable.items(),
-                                   desc=f'Saving {variable_name}',
-                                   total=len(variable),
-                                   leave=True,
-                                   position=0):
-                save_file(key)
-            # else:
-            #     save_file()
+            if type(variable) is dict or type(variable) is defaultdict:
+                for key, value in tqdm(variable.items(),
+                                       desc=f'Saving {variable_name}',
+                                       total=len(variable),
+                                       leave=True,
+                                       position=0):
+                    save_file(key)
+            else:
+                save_file()
 
         self.changed_variables.clear()
         print('State saved.')
@@ -220,11 +220,13 @@ class DictionaryCreator(object):
         # file format: {start_timestamp}_{variable_name}_{key}.dill
         file_names = os.listdir(os.path.join(self.state_files_path))
         timestamps = [file_name.split('_')[0] for file_name in file_names]
-        timestamps = [datetime.strptime(timestamp, self.timestamp_format) for timestamp in timestamps]
         timestamps.sort()
-        most_recent_timestamp = timestamps[-1].strftime(self.timestamp_format)
-        assert (
-                    most_recent_timestamp < self.start_timestamp)  # This dc should be newer than any other dc, and we do not need to load the own state.
+        if len(timestamps):
+            most_recent_timestamp = timestamps[-1]
+
+            # This dc should be newer than any other dc, and we do not need to load the own state.
+            assert (most_recent_timestamp < str(self.start_timestamp))
+
         return [file_name for file_name in file_names if file_name.startswith(most_recent_timestamp)]
 
     def _load_state(self):
@@ -237,31 +239,34 @@ class DictionaryCreator(object):
 
         # load class variables from separate dill files
         for variable_name in ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang', 'question_by_qid_by_lang',
-                              'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang',
+                              'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang', 'word_graph',
                               'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
-                              'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang', 'evaluation_results']:
+                              'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang',
+                              'evaluation_results_by_lang']:
             variable = getattr(self, variable_name)
-            if type(variable) is dict or type(variable) is defaultdict:
-                # get all matching file names in directory
-                file_paths = [os.path.join(self.state_files_path, file_name) for file_name in most_recent_files if
-                              '_'.join(file_name.split('_')[1:]).startswith(variable_name)]
 
-                for file_path in file_paths:
-                    def load_file(fallback_value):
-                        try:
-                            return dill.load(state_file)
-                        except EOFError:
-                            print(f'{file_path} is broken. Skipping.')
-                            return fallback_value
-
+            def load_file(fallback_value, file_path):
+                try:
                     with open(file_path, 'rb') as state_file:
-                        # if len(file_paths) > 1:
-                        key = file_path.split('_')[-1].split('.')[0]
-                        assert (key not in ('lang', 'bid'))
-                        if key in self.target_langs or key in self.bids:
-                            variable[key] = load_file(None)
-                    # else:
-                    #     variable = load_file(variable)
+                        return dill.load(state_file)
+                except (EOFError, UnpicklingError):
+                    print(f'{file_path} is broken. Skipping.')
+                    return fallback_value
+
+            # get all matching file names in directory
+            file_paths = [os.path.join(self.state_files_path, file_name) for file_name in most_recent_files if
+                          '_'.join(file_name.split('_')[1:]).startswith(variable_name)]
+
+            if type(variable) is dict or type(variable) is defaultdict:
+                for file_path in file_paths:
+                    key = file_path.split('_')[-1].split('.')[0]
+                    assert (key not in ('lang', 'bid'))
+                    if key in self.target_langs or key in self.bids:
+                        variable[key] = load_file(None, file_path)
+            else:
+                if len(file_paths):
+                    assert (len(file_paths) == 1)
+                    setattr(self, variable_name, load_file(variable, file_paths[0]))
 
         # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between computing link scores and tf-idf scores
         # self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
@@ -418,7 +423,6 @@ class DictionaryCreator(object):
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0 and len(bid_1_wtxts) + len(bid_2_wtxts) > 0:
                             # verse is missing in only one bible
                             print('Missing verse - verses might be misaligned!', idx, bid_1_wtxts, bid_2_wtxts)
-                            pass
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0:
                             # verse is missing in both bibles
                             bid_1_wtxts = ['#placeholder#']
@@ -539,6 +543,7 @@ class DictionaryCreator(object):
         self.word_graph = nx.Graph()
         self.word_graph.add_nodes_from(word_nodes)
         self.word_graph.add_weighted_edges_from(weighted_edges)
+        self.changed_variables.add('word_graph')
 
         if save:
             self._save_state()
@@ -1094,7 +1099,7 @@ class DictionaryCreator(object):
             precision, recall, f1, recall_adjusted, f1_adjusted = self._compute_f1_score(predicted_target_wtxts_by_qid,
                                                                                          target_lang)
             mean_reciprocal_rank = self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
-            self.evaluation_results[target_lang] = {
+            self.evaluation_results_by_lang[target_lang] = {
                 'precision': precision,
                 'recall': recall,
                 'F1': f1,
@@ -1102,7 +1107,7 @@ class DictionaryCreator(object):
                 'F1*': f1_adjusted,
                 'MRR': mean_reciprocal_rank
             }
-            self.changed_variables.add('evaluation_results')
+            self.changed_variables.add('evaluation_results_by_lang')
 
         if save:
             self._save_state()

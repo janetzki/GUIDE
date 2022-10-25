@@ -1,5 +1,4 @@
 import os
-import time
 from unittest import TestCase
 
 import networkx as nx
@@ -19,6 +18,10 @@ class TestDictionaryCreator(TestCase):
                                  sd_path_prefix=sd_path_prefix)
 
     def setUp(self) -> None:
+        # delete all files in test/data/0_state
+        for file in os.listdir('test/data/0_state'):
+            os.remove('test/data/0_state/' + file)
+
         # delete all files in test/data/1_aligned_bibles
         for file in os.listdir('test/data/1_aligned_bibles'):
             os.remove('test/data/1_aligned_bibles/' + file)
@@ -52,7 +55,6 @@ class TestDictionaryCreator(TestCase):
 
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
                                  prediction_method='link prediction', sd_path_prefix=None, check_isomorphism=False):
-        time.sleep(1)
         dc_new = TestDictionaryCreator._create_dictionary_creator()
 
         if sd_path_prefix is not None:
@@ -82,7 +84,7 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(sorted(self.dc.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)),
                          sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
-        self.assertDictEqual(self.dc.evaluation_results, dc_new.evaluation_results)
+        self.assertDictEqual(self.dc.evaluation_results_by_lang, dc_new.evaluation_results_by_lang)
 
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
         self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
@@ -99,28 +101,26 @@ class TestDictionaryCreator(TestCase):
                                       prediction_method='invalid prediction method')
 
     def test_load_only_most_current_file(self):
-        self.dc.evaluation_results = {
+        self.dc.evaluation_results_by_lang = {
             'eng': {'precision': 0.5}
         }
-        self.dc.changed_variables.add('evaluation_results')
+        self.dc.changed_variables.add('evaluation_results_by_lang')
         self.dc._save_state()
-        del self.dc.evaluation_results['eng']
+        del self.dc.evaluation_results_by_lang['eng']
 
-        time.sleep(1)
         self.dc = TestDictionaryCreator._create_dictionary_creator()
 
-        self.dc.evaluation_results = {
+        self.dc.evaluation_results_by_lang = {
             'fra': {'precision': 0.3}
         }
-        self.dc.changed_variables.add('evaluation_results')
+        self.dc.changed_variables.add('evaluation_results_by_lang')
         self.dc._save_state()
-        del self.dc.evaluation_results['fra']
+        del self.dc.evaluation_results_by_lang['fra']
 
-        time.sleep(1)
         self.dc = TestDictionaryCreator._create_dictionary_creator()
 
         self.dc._load_state()
-        self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results)
+        self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results_by_lang)
 
     def test__convert_bid_to_lang(self):
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-eng-DBY'), 'eng')
@@ -161,6 +161,16 @@ class TestDictionaryCreator(TestCase):
     def test__load_state(self):
         # should not fail
         self.dc._load_state()
+
+    def test__load_state_with_broken_file(self):
+        # create a broken dill file
+        file_path = os.path.join(self.dc.state_files_path, f'{self.dc.start_timestamp - 1}_word_graph.dill')
+        with open(file_path, 'w') as f:
+            f.write('broken file')
+
+        self.dc._load_state()
+
+        self.assertEqual(None, self.dc.word_graph)
 
     def test__load_data(self):
         self.dc._load_data()
