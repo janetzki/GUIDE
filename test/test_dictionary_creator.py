@@ -9,13 +9,15 @@ from word import Word
 
 class TestDictionaryCreator(TestCase):
     @staticmethod
-    def _create_dictionary_creator(bids=None, sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
+    def _create_dictionary_creator(bids=None, sd_path_prefix='test/data/semdom_qa_clean_short'):
         if bids is None:
             bids = ['bid-eng-DBY-10', 'bid-fra-fob-10']
-        return DictionaryCreator(bids, score_threshold=0.2,
-                                 state_files_path='test/data/0_state',
-                                 aligned_bibles_path='test/data/1_aligned_bibles',
-                                 sd_path_prefix=sd_path_prefix)
+        dc = DictionaryCreator(bids, score_threshold=0.2,
+                               state_files_path='test/data/0_state',
+                               aligned_bibles_path='test/data/1_aligned_bibles',
+                               sd_path_prefix=sd_path_prefix)
+        dc.num_verses = 10
+        return dc
 
     def setUp(self) -> None:
         # delete all files in test/data/0_state
@@ -46,15 +48,16 @@ class TestDictionaryCreator(TestCase):
                 return False
         return True
 
-    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink',
+    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink', min_count=1,
                            prediction_method='link prediction'):
         dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_word=plot_word,
-                             prediction_method=prediction_method)
+                             min_count=min_count, prediction_method=prediction_method)
         self.assertFalse(
             self._check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
-                                 prediction_method='link prediction', sd_path_prefix=None, check_isomorphism=False):
+                                 min_count=1, prediction_method='link prediction',
+                                 sd_path_prefix=None, check_isomorphism=False):
         dc_new = TestDictionaryCreator._create_dictionary_creator()
 
         if sd_path_prefix is not None:
@@ -63,10 +66,10 @@ class TestDictionaryCreator(TestCase):
 
         print('STARTING PIPELINE RUN 1/2')
         self._run_full_pipeline(self.dc, load=load_1, save=save_1, plot_word_lang=plot_word_lang, plot_word=plot_word,
-                                prediction_method=prediction_method)
+                                min_count=min_count, prediction_method=prediction_method)
         print('\n\nSTARTING PIPELINE RUN 2/2')
         self._run_full_pipeline(dc_new, load=load_2, save=save_2, plot_word_lang=plot_word_lang, plot_word=plot_word,
-                                prediction_method=prediction_method)
+                                min_count=min_count, prediction_method=prediction_method)
 
         self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())
         for lang in self.dc.sds_by_lang.keys():
@@ -88,12 +91,18 @@ class TestDictionaryCreator(TestCase):
 
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
         self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
-                                      prediction_method='link prediction')
+                                      prediction_method='link prediction',
+                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')
 
-    def test_full_pipeline_with_loading_and_with_few_sds_and_with_tfidf(self):
+    def test_full_pipeline_with_loading_and_with_link_prediction(self):
+        self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
+                                      plot_word_lang='fra', plot_word='et', min_count=2,
+                                      prediction_method='link prediction', check_isomorphism=True)
+
+    def test_full_pipeline_with_loading_and_with_tfidf(self):
         self._run_full_pipeline_twice(load_1=False, save_1=True, load_2=True, save_2=False,
-                                      plot_word_lang='fra', plot_word='et', prediction_method='tfidf',
-                                      sd_path_prefix='test/data/semdom_qa_clean_short', check_isomorphism=True)
+                                      plot_word_lang='fra', plot_word='et', min_count=3,
+                                      prediction_method='tfidf', check_isomorphism=True)
 
     def test_create_dictionary_with_invalid_input(self):
         with self.assertRaises(NotImplementedError):
@@ -176,8 +185,8 @@ class TestDictionaryCreator(TestCase):
         self.dc._load_data()
 
         self.assertEqual({'eng', 'fra'}, self.dc.sds_by_lang.keys())
-        self.assertEqual(7955, len(self.dc.sds_by_lang['eng']))
-        self.assertEqual(7812, len(self.dc.sds_by_lang['fra']))
+        self.assertEqual(9, len(self.dc.sds_by_lang['eng']))  # 7955 with all sds
+        self.assertEqual(9, len(self.dc.sds_by_lang['fra']))  # 7812 with all sds
 
         self.assertEqual({'bid-eng-DBY-10', 'bid-fra-fob-10'}, self.dc.verses_by_bid.keys())
         self.assertEqual('In the beginning God created the heavens and the earth.\n',
@@ -186,8 +195,7 @@ class TestDictionaryCreator(TestCase):
                          self.dc.verses_by_bid['bid-fra-fob-10'][0])
 
     def test__load_data_with_missing_sds(self):
-        self.dc = self._create_dictionary_creator(['bid-eng-DBY-10', 'bid-deu-10'],
-                                                  sd_path_prefix='test/data/semdom_qa_clean_short')
+        self.dc = self._create_dictionary_creator(['bid-eng-DBY-10', 'bid-deu-10'])
 
         self.dc._load_data()
 

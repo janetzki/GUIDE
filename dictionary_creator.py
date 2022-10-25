@@ -102,6 +102,7 @@ class DictionaryCreator(object):
         self.score_threshold = score_threshold
         self.sd_path_prefix = sd_path_prefix
         self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
+        self.num_verses = 41899
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -306,7 +307,7 @@ class DictionaryCreator(object):
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
                 self.changed_variables.add('verses_by_bid')
-            assert (len(self.verses_by_bid[bid]) == 41899)
+            assert (len(self.verses_by_bid[bid]) == self.num_verses)
 
     def _build_sds(self):
         # convert sd dataframe to dictionary
@@ -831,7 +832,6 @@ class DictionaryCreator(object):
             self._map_word_to_qid_bidirectionally(word_1.text, word_2.text, word_1.iso_language, word_2.iso_language,
                                                   link_score, score_by_wtxt_by_qid_by_lang)
 
-        self.top_scores_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
             if target_lang in self.top_scores_by_qid_by_lang:
                 print(f'Skipped: top {target_lang} scores already collected')
@@ -1112,7 +1112,7 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink',
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink', min_count=1,
                           prediction_method='link prediction'):
         if prediction_method not in ('link prediction', 'tfidf'):
             raise NotImplementedError(f'Prediction method {prediction_method} not implemented.')
@@ -1128,7 +1128,7 @@ class DictionaryCreator(object):
             self.predict_links(load=load, save=save)
         else:  # tfidf
             self.train_tfidf_based_model(load=load, save=save)
-        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=1)
+        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=min_count)
 
         self.evaluate(load=load, save=save, print_reciprocal_ranks=False)
 
