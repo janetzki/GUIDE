@@ -900,7 +900,7 @@ class DictionaryCreator(object):
         if len(gt_target_wtxts_by_qid) == 0:
             print(f'Cannot compute F1 score etc. for {target_lang} '
                   f'because no ground-truth target semantic domains have been loaded')
-            return
+            return None
 
         false_positives = []
         false_negatives = []

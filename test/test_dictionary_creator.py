@@ -536,6 +536,10 @@ class TestDictionaryCreator(TestCase):
     # def test__compute_f1_score(self):
     #     self.fail()
 
+    def test__compute_f1_score_without_target_semantic_domains(self):
+        result = self.dc._compute_f1_score(None, 'deu')
+        self.assertEqual(None, result)
+
     # def test__load_test_data(self):
     #     self.fail()
 
@@ -559,5 +563,13 @@ class TestDictionaryCreator(TestCase):
 
         self.assertEqual(0.75, mean_reciprocal_rank)
 
+    def test__compute_mean_reciprocal_rank_without_target_semantic_domains(self):
+        result = self.dc._compute_mean_reciprocal_rank('urd')
+        self.assertEqual(None, result)
+
     # def test_evaluate(self):
     #     self.fail()
+
+    def test_evaluate_without_source_semantic_domains(self):
+        self.dc.evaluate()
+        self.assertDictEqual({}, self.dc.evaluation_results_by_lang)
