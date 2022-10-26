@@ -694,17 +694,7 @@ class DictionaryCreator(object):
         avg_weights_sum = (sum_weights_1_to_2 + sum_weights_2_to_1) / 2
         return edge_weight / avg_weights_sum
 
-    def _predict_lemmas(self, load=False, save=False):
-        if load:
-            self._load_state()
-
-        if len(self.base_lemma_by_wtxt_by_lang):
-            print('Skipped: Lemmas were already predicted')
-            assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
-                    len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
-            return
-
-        lemma_link_candidates = self._find_lemma_link_candidates()
+    def _predict_lemma_links(self, lemma_link_candidates):
         # preds = nx.jaccard_coefficient(self.word_graph)
         # preds = nx.adamic_adar_index(self.word_graph)
         preds = self._weighted_resource_allocation_index(lemma_link_candidates)
@@ -718,19 +708,23 @@ class DictionaryCreator(object):
                 continue
             distance = edit_distance(wtxt_1, wtxt_2)
             if distance < max(len(wtxt_1), len(wtxt_2)) / 3:
-                # find the base lemma, which is the most occurring lemma
+                # find the base lemma, which is the most frequent lemma
                 base_lemma_1 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_1, wtxt_1)
                 base_lemma_2 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_2, wtxt_2)
-                new_base_lemma = wtxt_1
                 words_by_text = self.words_by_text_by_lang[lang]
 
+                # start with word_1 as the assumed base lemma
+                new_base_lemma = wtxt_1
                 if word_1.occurrences_in_bible < word_2.occurrences_in_bible:
+                    # word_2 is more frequent than word_1
                     new_base_lemma = wtxt_2
                 if words_by_text[new_base_lemma].occurrences_in_bible \
                         < words_by_text[base_lemma_1].occurrences_in_bible:
+                    # word_1's base lemma is (even) more frequent
                     new_base_lemma = base_lemma_1
                 if words_by_text[new_base_lemma].occurrences_in_bible \
                         < words_by_text[base_lemma_2].occurrences_in_bible:
+                    # word_2's base lemma is (even) more frequent
                     new_base_lemma = base_lemma_2
 
                 # build a group of all lemmas that belong together
@@ -750,6 +744,19 @@ class DictionaryCreator(object):
             # sort self.lemma_group_by_base_lemma_by_lang by key
             self.lemma_group_by_base_lemma_by_lang[lang] = dict(
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
+
+    def _predict_lemmas(self, load=False, save=False):
+        if load:
+            self._load_state()
+
+        if len(self.base_lemma_by_wtxt_by_lang):
+            print('Skipped: Lemmas were already predicted')
+            assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
+                    len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
+            return
+
+        lemma_link_candidates = self._find_lemma_link_candidates()
+        self._predict_lemma_links(lemma_link_candidates)
 
         # validate lemmas
         for lang in self.lemma_group_by_base_lemma_by_lang:
@@ -862,8 +869,8 @@ class DictionaryCreator(object):
             assert (tfidfs.shape[0] == len(aligned_wtxts_by_qid))
             for idx, tfidf in tqdm(enumerate(tfidfs),
                                    desc=f'Collecting top {target_lang} tf-idf scores',
-                                   total=tfidfs.shape[
-                                       0]):  # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
+                                   total=tfidfs.shape[0]):  # caution:
+                # might fail in debug mode with Python 3.10 instead of Python 3.9
                 qid = list(aligned_wtxts_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)

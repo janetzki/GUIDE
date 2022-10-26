@@ -302,6 +302,29 @@ class TestDictionaryCreator(TestCase):
         self.dc.words_by_text_by_lang[lang][text] = word
         return word
 
+    def _initialize_4_german_words(self):
+        self.dc.target_langs = ['eng', 'deu']
+
+        eng_word_1_1 = self._create_word('pass each other', 'eng', None, 30)
+        eng_word_1_2 = self._create_word('passed each other', 'eng', None, 20)
+        eng_word_1_3 = self._create_word('passing each other', 'eng', None, 10)
+
+        deu_word_1_1 = self._create_word('aneinander vorbeigehen', 'deu', None, 40)
+        deu_word_1_2 = self._create_word('aneinander vorbeigegangen', 'deu', None, 30)
+        deu_word_1_3 = self._create_word('aneinander vorbeigehend', 'deu', None, 20)
+        deu_word_1_4 = self._create_word('aneinander vorbeigingen', 'deu', None, 10)
+
+        # correct edges
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_3, deu_word_1_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_4, 10)
+
+        # noisy edges
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_2, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_4, 5)
+
     def _initialize_5_german_words(self):
         self.dc.target_langs = ['eng', 'deu']
 
@@ -318,16 +341,56 @@ class TestDictionaryCreator(TestCase):
         deu_word_2_1 = self._create_word('mensch', 'deu', None, 50)
         deu_word_2_2 = self._create_word('menschen', 'deu', None, 40)
 
+        # correct edges
         self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1, 10)
         self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_2, 10)
         self.dc._add_bidirectional_edge(eng_word_1_3, deu_word_1_3, 10)
         self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_1, 10)
         self.dc._add_bidirectional_edge(eng_word_2_2, deu_word_2_2, 10)
 
+        # noisy edges
         self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_2, 5)
         self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3, 5)
         self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_2_2, 1)
         self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_2, 5)
+
+    def test__predict_lemma_links(self):
+        # designed to cover unlikely branches
+        self._initialize_4_german_words()
+
+        self.dc.build_word_graph()
+        self.dc.plot_subgraph('eng', 'pass each other')
+        lemma_link_candidates = [
+            (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigingen'],
+             self.dc.words_by_text_by_lang['deu']['aneinander vorbeigegangen']),
+
+            (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehend'],
+             self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehen']),
+
+            (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigingen'],
+             self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehend']),
+        ]
+
+        self.dc._predict_lemma_links(lemma_link_candidates)
+
+        self.assertEqual({
+            'deu': {
+                'aneinander vorbeigegangen': 'aneinander vorbeigehen',
+                'aneinander vorbeigehen': 'aneinander vorbeigehen',
+                'aneinander vorbeigehend': 'aneinander vorbeigehen',
+                'aneinander vorbeigingen': 'aneinander vorbeigehen',
+            }
+        }, self.dc.base_lemma_by_wtxt_by_lang)
+        self.assertEqual({
+            'deu': {
+                'aneinander vorbeigehen': {
+                    'aneinander vorbeigehen',
+                    'aneinander vorbeigegangen',
+                    'aneinander vorbeigehend',
+                    'aneinander vorbeigingen',
+                },
+            }
+        }, self.dc.lemma_group_by_base_lemma_by_lang)
 
     def test__predict_lemmas(self):
         self._initialize_5_german_words()
@@ -337,15 +400,28 @@ class TestDictionaryCreator(TestCase):
         self.dc._predict_lemmas()
 
         self.assertEqual({
-            'vorbeigehen': 'vorbeigehen',
-            'vorbeigegangen': 'vorbeigehen',
-            'vorbeigehend': 'vorbeigehen',
-            'mensch': 'mensch',
-            'menschen': 'mensch',
-        }, self.dc.base_lemma_by_wtxt_by_lang['deu'])
-        self.assertEqual(
-            {'vorbeigehen': {'vorbeigehen', 'vorbeigegangen', 'vorbeigehend'}, 'mensch': {'mensch', 'menschen'}},
-            self.dc.lemma_group_by_base_lemma_by_lang['deu'])
+            'eng': {
+                'human being': 'human being',
+                'human beings': 'human being',
+            },
+            'deu': {
+                'vorbeigehen': 'vorbeigehen',
+                'vorbeigegangen': 'vorbeigehen',
+                'vorbeigehend': 'vorbeigehen',
+                'mensch': 'mensch',
+                'menschen': 'mensch',
+            }
+        }, self.dc.base_lemma_by_wtxt_by_lang)
+        self.assertEqual({
+            'eng': {
+                'human being':
+                    {'human being', 'human beings'}
+            },
+            'deu': {
+                'vorbeigehen': {'vorbeigehen', 'vorbeigegangen', 'vorbeigehend'},
+                'mensch': {'mensch', 'menschen'}
+            }
+        }, self.dc.lemma_group_by_base_lemma_by_lang)
 
     def test__contract_lemmas(self):
         # self._create_word('drink', 'eng', None, 3)
