@@ -579,8 +579,8 @@ class DictionaryCreator(object):
             neighbors_1st_order.add(neighbor_1st_order)
             is_predicted_link_1st_order = self._compute_link_score(node, neighbor_1st_order) >= self.score_threshold
             for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
-                if not is_predicted_link_1st_order and self._compute_link_score(neighbor_1st_order,
-                                                                                neighbor_2nd_order) < self.score_threshold:
+                if not is_predicted_link_1st_order \
+                        and self._compute_link_score(neighbor_1st_order, neighbor_2nd_order) < self.score_threshold:
                     continue
                 neighbors_2nd_order.add(neighbor_2nd_order)
                 for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):

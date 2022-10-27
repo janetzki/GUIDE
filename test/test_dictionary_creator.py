@@ -89,11 +89,6 @@ class TestDictionaryCreator(TestCase):
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(self.dc.evaluation_results_by_lang, dc_new.evaluation_results_by_lang)
 
-    def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
-        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
-                                      prediction_method='link prediction',
-                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')
-
     def test_full_pipeline_with_loading_and_with_link_prediction(self):
         self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
                                       plot_word_lang='fra', plot_word='et', min_count=2,
@@ -770,3 +765,10 @@ class TestDictionaryCreator(TestCase):
     def test_evaluate_without_source_semantic_domains(self):
         self.dc.evaluate()
         self.assertDictEqual({}, self.dc.evaluation_results_by_lang)
+
+
+class TestDictionaryCreatorSlow(TestDictionaryCreator):
+    def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
+        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
+                                      prediction_method='link prediction',
+                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')

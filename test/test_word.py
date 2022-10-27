@@ -10,6 +10,10 @@ class TestWord(TestCase):
     # def test_get_aligned_words_and_counts(self):
     #     self.fail()
 
+    def test_get_aligned_words_and_counts_empty(self):
+        result = list(self.word.get_aligned_words_and_counts({}))
+        self.assertEqual([], result)
+
     # def test_add_aligned_word(self):
     #     self.fail()
 
