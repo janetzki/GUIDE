@@ -536,7 +536,9 @@ class DictionaryCreator(object):
         for lang_1 in self.words_by_text_by_lang:
             for word_1 in self.words_by_text_by_lang[lang_1].values():
                 for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
-                    if word_2.iso_language not in self.target_langs:  # hacky way to ignore additional languages in graph (instead of re-building the graph with only target languages)
+                    if word_2.iso_language not in self.target_langs:
+                        # quick fix to ignore additional languages in graph
+                        # (instead of re-building the graph with only target languages)
                         continue
                     weighted_edges.append([word_1, word_2, count])
 
@@ -626,7 +628,6 @@ class DictionaryCreator(object):
             link_score = self._compute_link_score(edge[0], edge[1])
             color = 'green' if link_score >= self.score_threshold else 'gray'
             nx.draw_networkx_edges(displayed_subgraph, pos=pos, edgelist=[edge],
-                                   # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
                                    width=[math.log(edge[2]) + 1], alpha=0.5,
                                    edge_color=color)
 
@@ -869,8 +870,7 @@ class DictionaryCreator(object):
             assert (tfidfs.shape[0] == len(aligned_wtxts_by_qid))
             for idx, tfidf in tqdm(enumerate(tfidfs),
                                    desc=f'Collecting top {target_lang} tf-idf scores',
-                                   total=tfidfs.shape[0]):  # caution:
-                # might fail in debug mode with Python 3.10 instead of Python 3.9
+                                   total=tfidfs.shape[0]):
                 qid = list(aligned_wtxts_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)

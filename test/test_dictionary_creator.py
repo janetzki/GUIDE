@@ -250,6 +250,29 @@ class TestDictionaryCreator(TestCase):
         self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
         self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
 
+    def test__combine_alignments_with_missing_verse(self):
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
+                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
+                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
+                 'face', 'of', 'the', 'water', '.'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
+                [],
+                [],
+                [],
+            ],
+        }
+
+        self.dc._combine_alignments()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
+
     def test_preprocess_data(self):
         self.dc.preprocess_data()
 
@@ -265,8 +288,78 @@ class TestDictionaryCreator(TestCase):
     # def test__map_word_to_qid_bidirectionally(self):
     #     self.fail()
 
-    # def test__map_two_bibles(self):
-    #     self.fail()
+    def test__map_two_bibles(self):
+        self.dc.verses_by_bid = {
+            'bid-eng-DBY-10': [
+                'In the beginning...\n',
+                'And the earth...\n',
+                '\n',
+                '\n',
+            ],
+            'bid-fra-fob-10': [
+                'Au commencement...',
+                '\n',
+                '\n',
+                '\n',
+            ]
+        }
+        eng_word_1 = self._create_word('in', 'eng')
+        eng_word_2 = self._create_word('the', 'eng')
+        eng_word_3 = self._create_word('beginning', 'eng')
+        eng_word_4 = self._create_word('...', 'eng')
+        eng_word_5 = self._create_word('and', 'eng')
+        eng_word_6 = self._create_word('earth', 'eng', {'1.2 World'})
+        fra_word_1 = self._create_word('au', 'fra')
+        fra_word_2 = self._create_word('commencement', 'fra', {'8.4.6.1.1 Débuter'})
+        fra_word_3 = self._create_word('...', 'fra')
+        self.dc.words_by_text_by_lang = {
+            'eng': {
+                'in': eng_word_1,
+                'the': eng_word_2,
+                'beginning': eng_word_3,
+                '...': eng_word_4,
+                'and': eng_word_5,
+                'earth': eng_word_6,
+            },
+            'fra': {
+                'au': fra_word_1,
+                'commencement': fra_word_2,
+                '...': fra_word_3,
+            }
+        }
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', '...'],
+                ['and', 'the', 'earth', '...'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', '...'],
+                [],
+                [],
+                [],
+            ],
+        }
+        alignment = [
+            '0-0 1-0 2-1 3-2\n',
+            '0-0\n',
+            '0-0\n',
+            '0-0\n',
+        ]
+
+        self.dc._map_two_bibles(alignment, 'bid-eng-DBY-10', 'bid-fra-fob-10')
+
+        self.assertListEqual([(eng_word_1, 1), (eng_word_2, 1)],
+                             list(fra_word_1.get_aligned_words_and_counts(self.dc.words_by_text_by_lang)))
+        self.assertDictEqual({
+            'eng': {
+                'fra': {
+                    '8.4.6.1.1 Débuter': ', beginning'
+                }
+            },
+            'fra': {}
+        }, self.dc.aligned_wtxts_by_qid_by_lang_by_lang)
 
     # def test_map_words_to_qids(self):
     #     self.fail()
