@@ -372,6 +372,18 @@ class TestDictionaryCreator(TestCase):
         self.assertEqual(self.dc.word_graph.number_of_nodes(), 10)
         self.assertEqual(self.dc.word_graph.number_of_edges(), 9)
 
+    def test_build_word_graph_with_additional_languages(self):
+        # load languages that do not appear in the target languages
+        words = self._initialize_words_for_3_languages()
+        self.dc.build_word_graph()
+
+        # check if word_graph contains a certain node
+        [self.assertTrue(self.dc.word_graph.has_node(word)) for word in words['eng']]
+        [self.assertTrue(self.dc.word_graph.has_node(word)) for word in words['fra']]
+        [self.assertFalse(self.dc.word_graph.has_node(word)) for word in words['deu']]
+        self.assertEqual(self.dc.word_graph.number_of_nodes(), 6)
+        self.assertEqual(self.dc.word_graph.number_of_edges(), 7)
+
     # def test_plot_subgraph(self):
     #     self.fail()
 
@@ -599,9 +611,7 @@ class TestDictionaryCreator(TestCase):
                 }}
         }, dict(self.dc.top_scores_by_qid_by_lang))
 
-    def test_predict_links_in_3_languages(self):
-        self.dc.target_langs = ['eng', 'fra', 'deu']
-
+    def _initialize_words_for_3_languages(self):
         eng_word_1 = self._create_word('drink', 'eng', {'5.2.2.7 Drink 1', '5.2.3.6 Beverage 1'}, 3)
         eng_word_2 = self._create_word('water', 'eng', {'1.2.3 Solid, liquid, gas 2'}, 2)
         eng_word_3 = self._create_word('the', 'eng', {'9.2.3.5 Demonstrative pronouns 1'}, 100)
@@ -635,6 +645,16 @@ class TestDictionaryCreator(TestCase):
         self.dc._add_bidirectional_edge(deu_word_1, eng_word_3, 2)
         self.dc._add_bidirectional_edge(deu_word_2, fra_word_3, 2)
         self.dc._add_bidirectional_edge(deu_word_2, eng_word_3, 2)
+
+        return {
+            'eng': [eng_word_1, eng_word_2, eng_word_3],
+            'fra': [fra_word_1, fra_word_2, fra_word_3],
+            'deu': [deu_word_1, deu_word_2, deu_word_3]
+        }
+
+    def test_predict_links_in_3_languages(self):
+        self.dc.target_langs = ['eng', 'fra', 'deu']
+        self._initialize_words_for_3_languages()
 
         self.dc.build_word_graph()
         self.dc.predict_links()

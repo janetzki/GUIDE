@@ -529,18 +529,16 @@ class DictionaryCreator(object):
 
         # flatmap words
         word_nodes = [word for lang in self.words_by_text_by_lang
+                      if lang in self.target_langs  # ignore additional languages in graph
                       for word in self.words_by_text_by_lang[lang].values()]
 
         # get all edges for alignments between words in flat list
-        weighted_edges = []
-        for lang_1 in self.words_by_text_by_lang:
-            for word_1 in self.words_by_text_by_lang[lang_1].values():
-                for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
-                    if word_2.iso_language not in self.target_langs:
-                        # quick fix to ignore additional languages in graph
-                        # (instead of re-building the graph with only target languages)
-                        continue
-                    weighted_edges.append([word_1, word_2, count])
+        weighted_edges = set()
+        for word_1 in word_nodes:
+            for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
+                if word_2 not in word_nodes:
+                    continue
+                weighted_edges.add((word_1, word_2, count))
 
         # create graph structures with NetworkX
         self.word_graph = nx.Graph()
