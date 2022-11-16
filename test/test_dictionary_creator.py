@@ -7,7 +7,7 @@ from dictionary_creator import DictionaryCreator
 from word import Word
 
 
-class TestDictionaryCreator(TestCase):
+class TestDictionaryCreatorFast(TestCase):
     @staticmethod
     def _create_dictionary_creator(bids=None, sd_path_prefix='test/data/semdom_qa_clean_short'):
         if bids is None:
@@ -29,15 +29,15 @@ class TestDictionaryCreator(TestCase):
             os.remove('test/data/1_aligned_bibles/' + file)
 
         DictionaryCreator.BIBLES_BY_BID.update({
-            'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
+            'bid-eng-DBY-1000': '../../../dictionary_creator/test/data/eng-engDBY-1000-verses.txt',
             'bid-eng-DBY-100': '../../../dictionary_creator/test/data/eng-engDBY-100-verses.txt',
             'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
-            'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
+            'bid-fra-fob-1000': '../../../dictionary_creator/test/data/fra-fra_fob-1000-verses.txt',
             'bid-fra-fob-100': '../../../dictionary_creator/test/data/fra-fra_fob-100-verses.txt',
             'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
             'bid-deu-10': '../../../dictionary_creator/test/data/deu-deuelo-10-verses.txt',
         })
-        self.dc = TestDictionaryCreator._create_dictionary_creator()
+        self.dc = TestDictionaryCreatorFast._create_dictionary_creator()
         self.maxDiff = 100000
 
     def _check_if_edge_weights_doubled(self):
@@ -58,7 +58,7 @@ class TestDictionaryCreator(TestCase):
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
                                  min_count=1, prediction_method='link prediction',
                                  sd_path_prefix=None, check_isomorphism=False):
-        dc_new = TestDictionaryCreator._create_dictionary_creator()
+        dc_new = TestDictionaryCreatorFast._create_dictionary_creator()
 
         if sd_path_prefix is not None:
             self.dc.sd_path_prefix = sd_path_prefix
@@ -112,7 +112,7 @@ class TestDictionaryCreator(TestCase):
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['eng']
 
-        self.dc = TestDictionaryCreator._create_dictionary_creator()
+        self.dc = TestDictionaryCreatorFast._create_dictionary_creator()
 
         self.dc.evaluation_results_by_lang = {
             'fra': {'precision': 0.3}
@@ -121,7 +121,7 @@ class TestDictionaryCreator(TestCase):
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['fra']
 
-        self.dc = TestDictionaryCreator._create_dictionary_creator()
+        self.dc = TestDictionaryCreatorFast._create_dictionary_creator()
 
         self.dc._load_state()
         self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results_by_lang)
@@ -574,7 +574,7 @@ class TestDictionaryCreator(TestCase):
         self._initialize_5_german_words()
 
         self.dc.build_word_graph()
-        self.dc.predict_links()
+        self.dc.predict_translation_links()
         self.dc.plot_subgraph('eng', 'pass')
 
         self.assertDictEqual({
@@ -652,7 +652,7 @@ class TestDictionaryCreator(TestCase):
         self._initialize_words_for_3_languages()
 
         self.dc.build_word_graph()
-        self.dc.predict_links()
+        self.dc.predict_translation_links()
         self.dc.plot_subgraph('eng', 'the')
 
         self.assertDictEqual({
@@ -767,7 +767,8 @@ class TestDictionaryCreator(TestCase):
         self.assertDictEqual({}, self.dc.evaluation_results_by_lang)
 
 
-class TestDictionaryCreatorSlow(TestDictionaryCreator):
+class TestDictionaryCreatorComplete(TestDictionaryCreatorFast):
+    # This class is for slower test cases.
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
         self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
                                       prediction_method='link prediction',

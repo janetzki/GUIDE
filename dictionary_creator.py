@@ -7,11 +7,11 @@ from collections import defaultdict
 from pickle import UnpicklingError
 
 import dill
-import matplotlib.patches as mpatches
 import networkx as nx
 import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
+from matplotlib.patches import Patch
 from nltk import WordNetLemmatizer, pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus.reader.wordnet import WordNetError
@@ -29,6 +29,9 @@ from word import Word
 
 class DictionaryCreator(object):
     BIBLES_BY_BID = {
+        'bid-eng-DBY-1000': '../../../dictionary_creator/test/data/eng-engDBY-1000-verses.txt',
+        'bid-fra-fob-1000': '../../../dictionary_creator/test/data/fra-fra_fob-1000-verses.txt',
+
         'bid-eng-asvbt': 'eng-engasvbt.txt',
         'bid-eng-asv': 'eng-eng-asv.txt',
         'bid-eng-BBE': 'eng-engBBE.txt',
@@ -163,7 +166,9 @@ class DictionaryCreator(object):
 
         References
         ----------
-        .. resource allocation... todo (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
+        .. resource allocation... todo
+           (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
+
            Predicting missing links via local information.
            Eur. Phys. J. B 71 (2009) 623.
            https://arxiv.org/pdf/0901.0553.pdf
@@ -175,8 +180,8 @@ class DictionaryCreator(object):
                        / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
                           self._compute_sum_of_weights(common_neighbor, word_2.iso_language))
                        for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2)
-                       if
-                       word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore eng-eng-eng edges
+                       if word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore
+            # eng-eng-eng edges
 
         return DictionaryCreator._apply_prediction(predict, ebunch)
 
@@ -191,25 +196,25 @@ class DictionaryCreator(object):
                                   total=len(self.changed_variables)):
             variable = getattr(self, variable_name)
 
-            def save_file(key=''):
-                if key:
+            def save_file(variable_key=''):
+                if variable_key:
                     file_path = os.path.join(self.state_files_path,
-                                             f'{self.start_timestamp}_{variable_name}_{key}.dill')
+                                             f'{self.start_timestamp}_{variable_name}_{variable_key}.dill')
                 else:
                     file_path = os.path.join(self.state_files_path, f'{self.start_timestamp}_{variable_name}.dill')
 
                 with open(file_path, 'wb') as state_file:
-                    if key:
-                        dill.dump(variable[key], state_file)
+                    if variable_key:
+                        dill.dump(variable[variable_key], state_file)
                     else:
                         dill.dump(variable, state_file)
 
             if type(variable) is dict or type(variable) is defaultdict:
-                for key, value in tqdm(variable.items(),
-                                       desc=f'Saving {variable_name}',
-                                       total=len(variable),
-                                       leave=True,
-                                       position=0):
+                for key in tqdm(variable.keys(),
+                                desc=f'Saving {variable_name}',
+                                total=len(variable),
+                                leave=True,
+                                position=0):
                     save_file(key)
             else:
                 save_file()
@@ -222,6 +227,7 @@ class DictionaryCreator(object):
         file_names = os.listdir(os.path.join(self.state_files_path))
         timestamps = [file_name.split('_')[0] for file_name in file_names]
         timestamps.sort()
+        most_recent_timestamp = None
         if len(timestamps):
             most_recent_timestamp = timestamps[-1]
 
@@ -234,6 +240,9 @@ class DictionaryCreator(object):
         if self.state_loaded:
             return
 
+        print('WARNING: Loading might cause inconsistent behavior. '
+              'To get predictable results, you should execute the entire program without loading.')
+        # assumably, loading word_graph is dangerous because the dc writes it at multiple places
         print('Loading state...')
 
         most_recent_files = self._find_most_recent_files()
@@ -246,12 +255,14 @@ class DictionaryCreator(object):
                               'evaluation_results_by_lang']:
             variable = getattr(self, variable_name)
 
-            def load_file(fallback_value, file_path):
+            def load_file(fallback_value, path):
                 try:
-                    with open(file_path, 'rb') as state_file:
-                        return dill.load(state_file)
+                    with open(path, 'rb') as state_file:
+                        file_content = dill.load(state_file)
+                        print(f'{path} loaded.')
+                        return file_content
                 except (EOFError, UnpicklingError):
-                    print(f'{file_path} is broken. Skipping.')
+                    print(f'{path} is broken. Skipping.')
                     return fallback_value
 
             # get all matching file names in directory
@@ -269,9 +280,8 @@ class DictionaryCreator(object):
                     assert (len(file_paths) == 1)
                     setattr(self, variable_name, load_file(variable, file_paths[0]))
 
-        # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between computing link scores and tf-idf scores
-        # self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
-        # self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
+        # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between
+        #   computing link scores and tf-idf scores
 
         self.state_loaded = True
         print('State loaded.')
@@ -374,9 +384,13 @@ class DictionaryCreator(object):
             file = os.path.join(
                 '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
-            tokenizer.pre_tokenizer = Whitespace()
-            trainer = BpeTrainer()  # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might not be so important because this mainly happens for rare words) possible solution: use pre-defined word list for English, using utoken instead did not significantly improve results
-            # todo: try out a WordPieceTrainer (https://towardsdatascience.com/designing-tokenizers-for-low-resource-languages-7faa4ab30ef4)
+            tokenizer.pre_tokenizer = Whitespace()  # todo: try to delete this
+            trainer = BpeTrainer()
+            # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might
+            #   not be so important because this mainly happens for rare words) possible solution: use pre-defined word
+            #   list for English, using utoken instead did not significantly improve results
+            # todo: try out a WordPieceTrainer
+            #   (https://towardsdatascience.com/designing-tokenizers-for-low-resource-languages-7faa4ab30ef4)
             tokenizer.train(files=[file], trainer=trainer)
 
             # tokenize all verses
@@ -463,8 +477,9 @@ class DictionaryCreator(object):
             else:
                 score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
                 if target_wtxt in score_by_wtxt:
-                    score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt],
-                                                     link_score)  # todo: find mathematically elegant solution than using just the highest link score (something like 0.7 and 0.3 --> 0.9)
+                    score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt], link_score)
+                    # todo: find mathematically elegant solution than using just the highest link score
+                    #  (something like 0.7 and 0.3 --> 0.9)
                 else:
                     score_by_wtxt[target_wtxt] = link_score
 
@@ -536,7 +551,7 @@ class DictionaryCreator(object):
         weighted_edges = set()
         for word_1 in word_nodes:
             for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
-                if word_2 not in word_nodes:
+                if word_2.iso_language not in self.target_langs:
                     continue
                 weighted_edges.add((word_1, word_2, count))
 
@@ -569,7 +584,7 @@ class DictionaryCreator(object):
         filtered_word_graph.add_nodes_from(filtered_word_nodes)
         filtered_word_graph.add_weighted_edges_from(filtered_weighted_edges)
 
-        # define filtered subgraph of neighbors of neighbors of node
+        # define filtered subgraph of a node's 1st, 2nd, and 3rd order neighbors
         node = self.words_by_text_by_lang[lang][text]
         selected_nodes = {node}
         neighbors_1st_order = set()
@@ -609,7 +624,7 @@ class DictionaryCreator(object):
         node_colors = [palette[word.iso_language] for word in displayed_subgraph.nodes()]
 
         # show all the colors in a legend
-        plt.legend(handles=[mpatches.Patch(color=palette[lang], label=lang) for lang in self.target_langs])
+        plt.legend(handles=[Patch(color=palette[lang], label=lang) for lang in self.target_langs])
 
         # define position of nodes in figure
         pos = nx.nx_agraph.graphviz_layout(displayed_subgraph)
@@ -648,7 +663,9 @@ class DictionaryCreator(object):
         link_candidates = set()
         words_in_target_langs = [word for lang in self.target_langs
                                  for word in self.words_by_text_by_lang[lang].values()]
-        for word_1 in tqdm(words_in_target_langs, desc='Finding link candidates', total=len(words_in_target_langs)):
+        for word_1 in tqdm(words_in_target_langs,
+                           desc='Finding lemma link candidates',
+                           total=len(words_in_target_langs)):
             for common_neighbor in self.word_graph.neighbors(word_1):
                 for word_2 in self.word_graph.neighbors(common_neighbor):
                     if word_1 != word_2 \
@@ -663,7 +680,9 @@ class DictionaryCreator(object):
         link_candidates = set()
         words_in_target_langs = [word for lang in self.target_langs
                                  for word in self.words_by_text_by_lang[lang].values()]
-        for word_1 in tqdm(words_in_target_langs, desc='Finding link candidates', total=len(words_in_target_langs)):
+        for word_1 in tqdm(words_in_target_langs,
+                           desc='Finding translation link candidates',
+                           total=len(words_in_target_langs)):
             for word_2 in self.word_graph.neighbors(word_1):
                 if word_1 != word_2 \
                         and word_2.iso_language in self.target_langs \
@@ -741,7 +760,8 @@ class DictionaryCreator(object):
 
         for lang in self.lemma_group_by_base_lemma_by_lang:
             # sort self.lemma_group_by_base_lemma_by_lang by key
-            self.lemma_group_by_base_lemma_by_lang[lang] = dict(
+            self.lemma_group_by_base_lemma_by_lang[lang] = defaultdict(
+                set,
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
 
     def _predict_lemmas(self, load=False, save=False):
@@ -770,7 +790,8 @@ class DictionaryCreator(object):
                     assert (lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang])
 
         for lang in self.target_langs:
-            # if we found no lemmas for a language, at least create an empty dictionary to show that we tried finding them
+            # if we found no lemmas for a language,
+            # at least create an empty dictionary to show that we tried finding them
             if lang not in self.base_lemma_by_wtxt_by_lang:
                 self.base_lemma_by_wtxt_by_lang[lang] = dict()
             if lang not in self.lemma_group_by_base_lemma_by_lang:
@@ -792,7 +813,7 @@ class DictionaryCreator(object):
 
         # check if we already contracted the lemmas for at least one target language (except English)
         for lang in self.target_langs:
-            if lang == 'eng':
+            if lang == 'eng' or len(self.lemma_group_by_base_lemma_by_lang[lang]) == 0:
                 continue
             sample_lemma_wtxt_group = next(iter(self.lemma_group_by_base_lemma_by_lang[lang].values()))
             if any(wtxt not in self.words_by_text_by_lang[lang] for wtxt in sample_lemma_wtxt_group):
@@ -802,7 +823,8 @@ class DictionaryCreator(object):
 
         for lang in self.lemma_group_by_base_lemma_by_lang:
             if lang == 'eng':
-                continue  # todo?: We lemmatize English words using wordnet instead. --> todo: do not collect lemmas for English.
+                continue
+                # todo?: We lemmatize English words using wordnet instead. --> todo: do not collect lemmas for English.
 
             for base_lemma_wtxt, lemma_wtxt_group in tqdm(self.lemma_group_by_base_lemma_by_lang[lang].items(),
                                                           desc=f'Contracting lemmas for {lang}',
@@ -826,7 +848,7 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def predict_links(self, load=False, save=False):
+    def predict_translation_links(self, load=False, save=False):
         if load:
             self._load_state()
 
@@ -940,10 +962,10 @@ class DictionaryCreator(object):
         false_negatives.sort(key=lambda x: len(x[1]), reverse=True)
         false_negatives_in_verses.sort(key=lambda x: len(x[1]), reverse=True)
 
-        # number of all false matches to facilitate error analysis during debugging
-        num_false_positives = sum([len(x[1]) for x in false_positives])
-        num_false_negatives = sum([len(x[1]) for x in false_negatives])
-        num_false_negatives_in_verses = sum([len(x[1]) for x in false_negatives_in_verses])
+        # # number of all false matches to facilitate error analysis during debugging
+        # num_false_positives = sum([len(x[1]) for x in false_positives])
+        # num_false_negatives = sum([len(x[1]) for x in false_negatives])
+        # num_false_negatives_in_verses = sum([len(x[1]) for x in false_negatives_in_verses])
 
         # # How many non-unique wtxts are in the ground-truth target semantic domains?
         # num_total_sd_source_wtxts = 0
@@ -987,13 +1009,14 @@ class DictionaryCreator(object):
 
         # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # was actually found?
-        recall_adjusted = 0.0 if num_true_positive_wtxts == 0 else num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
+        recall_adjusted = 0.0 if num_true_positive_wtxts == 0 \
+            else num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
         print(f'recall*:   {recall_adjusted:.3f} ({num_true_positive_wtxts} '
               f'/ {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
               f'- that also appear in the target verses - found)')
 
         f1_adjusted = 0.0 if precision * recall_adjusted == 0 else 2 * (precision * recall_adjusted) / (
-                    precision + recall_adjusted)
+                precision + recall_adjusted)
         print(f'F1*:       {f1_adjusted:.3f}\n')
 
         # How many of the gt target wtxts appear in the target verses?
@@ -1012,7 +1035,8 @@ class DictionaryCreator(object):
         # optional: consider wtxt groups vs. single wtxts in calculation
         # # How many of the single gt target wtxts appear in the target verses?
         # target_wtxt_coverage = num_total_single_gt_sd_wtxts_in_target_verses / num_total_gt_target_wtxts
-        # print(f'Ground truth single target wtxt coverage: {target_wtxt_coverage:.3f} ({num_total_single_gt_sd_wtxts_in_target_verses} '
+        # print(f'Ground truth single target wtxt coverage: {target_wtxt_coverage:.3f} '
+        #       f'({num_total_single_gt_sd_wtxts_in_target_verses} '
         #       f'/ {num_total_gt_target_wtxts} {self.target_language} actual non-unique semantic domain words '
         #       'also appear in the target verses)')
         #
@@ -1020,17 +1044,18 @@ class DictionaryCreator(object):
         # # was actually found?
         # recall_adjusted2 = num_true_positive_wtxts / num_total_single_gt_sd_wtxts_in_target_verses
         # print(f'recall**: {recall_adjusted2:.3f} ({num_true_positive_wtxts} '
-        #       f'/ {num_total_single_gt_sd_wtxts_in_target_verses} {self.target_language} actual single semantic domain words '
+        #       f'/ {num_total_single_gt_sd_wtxts_in_target_verses} {self.target_language} '
+        #       f'actual single semantic domain words '
         #       '- that also appear in the target verses - found)')
         #
         # f1_adjusted2 = 2 * (precision * recall_adjusted2) / (precision + recall_adjusted2)
         # print(f'F1**: {f1_adjusted2:.3f}')
         return precision, recall, f1, recall_adjusted, f1_adjusted
 
-    def _load_test_data(self, source_lang, target_lang):
+    def _load_test_data(self, target_lang):
         # load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation)
         df_test = pd.read_csv(f'data/multilingual_semdom_dictionary.csv')
-        df_test = df_test[[f'{source_lang}-000.txt', f'{target_lang}-000.txt']]
+        df_test = df_test[[f'{self.source_lang}-000.txt', f'{target_lang}-000.txt']]
         df_test.columns = ['source_wtxt', 'target_wtxts']
         df_test = df_test[df_test['target_wtxts'].notna()]
 
@@ -1044,13 +1069,14 @@ class DictionaryCreator(object):
         # compute MRR to evaluate DC
         # Filter target question that we are going to check because ground truth set is limited:
         # We only consider questions which have at least one source wtxt in the gt set with a target translation.
-        # MRR improvement todo: Also filter out source wtxts (and questions, if empty) that do not appear in the source verses. (e.g., 'snake' does not appear in the KJV bible)
+        # MRR improvement todo: Also filter out source wtxts (and questions, if empty) that do not appear
+        #   in the source verses. (e.g., 'snake' does not appear in the KJV bible)
         # MRR improvement todo: also do this for source langs different from eng
         if target_lang in ('urd', 'tpi'):
             print(f'Cannot compute MRR for {target_lang} because no ground truth data is available.')
             return None
         target_qids = defaultdict(list)
-        df_test = self._load_test_data(self.source_lang, target_lang)
+        df_test = self._load_test_data(target_lang)
 
         for _, row in tqdm(df_test.iterrows(),
                            desc=f'Filtering {target_lang} question ids',
@@ -1067,7 +1093,7 @@ class DictionaryCreator(object):
 
         # in all selected target top_scores, look for first ranked target wtxt that also appears in df_test (gt data)
         mean_reciprocal_rank = 0
-        for qid, target_wtxts in target_qids.items():
+        for qid, target_wtxts in sorted(target_qids.items()):  # sorting avoids numerical unreproducibility
             wtxt_list = list(self.top_scores_by_qid_by_lang[target_lang][qid])
             reciprocal_rank = 0
             for idx, wtxt in enumerate(wtxt_list):
@@ -1126,11 +1152,14 @@ class DictionaryCreator(object):
         self.map_words_to_qids(load=load, save=save)
 
         self.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
+        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=min_count)
+
         self._predict_lemmas(load=load, save=save)
         self._contract_lemmas(load=load, save=save)
         self.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
+
         if prediction_method == 'link prediction':
-            self.predict_links(load=load, save=save)
+            self.predict_translation_links(load=load, save=save)
         else:  # tfidf
             self.train_tfidf_based_model(load=load, save=save)
         self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=min_count)
@@ -1139,5 +1168,6 @@ class DictionaryCreator(object):
 
 
 if __name__ == '__main__':  # pragma: no cover
+    # dc = DictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     dc = DictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
-    dc.create_dictionary()
+    dc.create_dictionary(load=False, save=False)
