@@ -1,20 +1,46 @@
+import os
 from unittest import TestCase
 
 import networkx as nx
 
 from dictionary_creator import DictionaryCreator
+from word import Word
 
 
 class TestDictionaryCreator(TestCase):
-    def setUp(self) -> None:
-        self.dc = DictionaryCreator(bibles_by_bid={
-            'bid-eng-DBY-100': '../../../dictionary_creator/data/1_test_data/eng-engDBY-100-verses.txt',
-            'bid-fra-fob-100': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-100-verses.txt',
-            # 'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
-            # 'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
-        }, score_threshold=0.2)
+    @staticmethod
+    def _create_dictionary_creator(bids=None, sd_path_prefix='test/data/semdom_qa_clean_short'):
+        if bids is None:
+            bids = ['bid-eng-DBY-10', 'bid-fra-fob-10']
+        dc = DictionaryCreator(bids, score_threshold=0.2,
+                               state_files_path='test/data/0_state',
+                               aligned_bibles_path='test/data/1_aligned_bibles',
+                               sd_path_prefix=sd_path_prefix)
+        dc.num_verses = 10
+        return dc
 
-    def check_if_edge_weights_doubled(self):
+    def setUp(self) -> None:
+        # delete all files in test/data/0_state
+        for file in os.listdir('test/data/0_state'):
+            os.remove('test/data/0_state/' + file)
+
+        # delete all files in test/data/1_aligned_bibles
+        for file in os.listdir('test/data/1_aligned_bibles'):
+            os.remove('test/data/1_aligned_bibles/' + file)
+
+        DictionaryCreator.BIBLES_BY_BID.update({
+            'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
+            'bid-eng-DBY-100': '../../../dictionary_creator/test/data/eng-engDBY-100-verses.txt',
+            'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
+            'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
+            'bid-fra-fob-100': '../../../dictionary_creator/test/data/fra-fra_fob-100-verses.txt',
+            'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
+            'bid-deu-10': '../../../dictionary_creator/test/data/deu-deuelo-10-verses.txt',
+        })
+        self.dc = TestDictionaryCreator._create_dictionary_creator()
+        self.maxDiff = 100000
+
+    def _check_if_edge_weights_doubled(self):
         # check if there are only even edge weights because the edge weights doubled
         edge_weights = nx.get_edge_attributes(self.dc.word_graph, 'weight')
         for weight in edge_weights.values():
@@ -22,46 +48,98 @@ class TestDictionaryCreator(TestCase):
                 return False
         return True
 
-    def execute_full_pipeline(self, dc, load, save):
-        dc.preprocess_data(load=load, save=save)
-        dc.map_words_to_qids(load=load, save=save)
-
-        dc.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
-        dc._predict_lemmas(load=load, save=save)
-        dc._contract_lemmas(load=load, save=save)
-        dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
-        dc.predict_links(load=load, save=save)
-        dc.plot_subgraph(lang='eng', text='drink', min_count=1)
-        dc.plot_subgraph(lang='fra', text='et', min_count=1)
+    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink', min_count=1,
+                           prediction_method='link prediction'):
+        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_word=plot_word,
+                             min_count=min_count, prediction_method=prediction_method)
         self.assertFalse(
-            self.check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
+            self._check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
-        # dc.train_tfidf_based_model(load=load, save=save)
-        evaluation_results = dc.evaluate(load=load, print_reciprocal_ranks=False)
-        return evaluation_results
+    def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
+                                 min_count=1, prediction_method='link prediction',
+                                 sd_path_prefix=None, check_isomorphism=False):
+        dc_new = TestDictionaryCreator._create_dictionary_creator()
 
-    def test_full_pipeline_twice(self):
+        if sd_path_prefix is not None:
+            self.dc.sd_path_prefix = sd_path_prefix
+            dc_new.sd_path_prefix = sd_path_prefix
+
         print('STARTING PIPELINE RUN 1/2')
-        evaluation_results_run_1 = self.execute_full_pipeline(self.dc, load=False, save=False)
-
-        dc_new = DictionaryCreator(bibles_by_bid={
-            'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
-            'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
-        }, score_threshold=0.2)
-
+        self._run_full_pipeline(self.dc, load=load_1, save=save_1, plot_word_lang=plot_word_lang, plot_word=plot_word,
+                                min_count=min_count, prediction_method=prediction_method)
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        evaluation_results_run_2 = self.execute_full_pipeline(dc_new, load=True, save=True)
-        self.assertEqual(evaluation_results_run_1, evaluation_results_run_2)
+        self._run_full_pipeline(dc_new, load=load_2, save=save_2, plot_word_lang=plot_word_lang, plot_word=plot_word,
+                                min_count=min_count, prediction_method=prediction_method)
+
+        self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())
+        for lang in self.dc.sds_by_lang.keys():
+            self.assertTrue(self.dc.sds_by_lang[lang].equals(dc_new.sds_by_lang[lang]))
+        self.assertDictEqual(self.dc.verses_by_bid, dc_new.verses_by_bid)
+        self.assertDictEqual(self.dc.words_by_text_by_lang['eng'], dc_new.words_by_text_by_lang['eng'])
+        self.assertDictEqual(self.dc.question_by_qid_by_lang, dc_new.question_by_qid_by_lang)
+        self.assertDictEqual(self.dc.wtxts_by_verse_by_bid, dc_new.wtxts_by_verse_by_bid)
+        self.assertDictEqual(self.dc.aligned_wtxts_by_qid_by_lang_by_lang, dc_new.aligned_wtxts_by_qid_by_lang_by_lang)
+        if check_isomorphism:
+            self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph,
+                                             edge_match=lambda x, y: x['weight'] == y['weight']))
+        self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
+        self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
+        self.assertEqual(sorted(self.dc.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)),
+                         sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
+        self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
+        self.assertDictEqual(self.dc.evaluation_results_by_lang, dc_new.evaluation_results_by_lang)
+
+    def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
+        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
+                                      prediction_method='link prediction',
+                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')
+
+    def test_full_pipeline_with_loading_and_with_link_prediction(self):
+        self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
+                                      plot_word_lang='fra', plot_word='et', min_count=2,
+                                      prediction_method='link prediction', check_isomorphism=True)
+
+    def test_full_pipeline_with_loading_and_with_tfidf(self):
+        self._run_full_pipeline_twice(load_1=False, save_1=True, load_2=True, save_2=False,
+                                      plot_word_lang='fra', plot_word='et', min_count=3,
+                                      prediction_method='tfidf', check_isomorphism=True)
+
+    def test_create_dictionary_with_invalid_input(self):
+        with self.assertRaises(NotImplementedError):
+            self.dc.create_dictionary(save=True, load=False, plot_word_lang='eng', plot_word='drink',
+                                      prediction_method='invalid prediction method')
+
+    def test_load_only_most_current_file(self):
+        self.dc.evaluation_results_by_lang = {
+            'eng': {'precision': 0.5}
+        }
+        self.dc.changed_variables.add('evaluation_results_by_lang')
+        self.dc._save_state()
+        del self.dc.evaluation_results_by_lang['eng']
+
+        self.dc = TestDictionaryCreator._create_dictionary_creator()
+
+        self.dc.evaluation_results_by_lang = {
+            'fra': {'precision': 0.3}
+        }
+        self.dc.changed_variables.add('evaluation_results_by_lang')
+        self.dc._save_state()
+        del self.dc.evaluation_results_by_lang['fra']
+
+        self.dc = TestDictionaryCreator._create_dictionary_creator()
+
+        self.dc._load_state()
+        self.assertEqual({'fra': {'precision': 0.3}}, self.dc.evaluation_results_by_lang)
 
     def test__convert_bid_to_lang(self):
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-eng-DBY'), 'eng')
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-fra-fob'), 'fra')
 
     def test__group_words_by_qid(self):
-        word_1 = DictionaryCreator.Word('moon', 'eng', {'1.1.1.1 Moon'})
-        word_2 = DictionaryCreator.Word('lunar', 'eng', {'1.1.1.1 Moon'})
-        word_3 = DictionaryCreator.Word('star', 'eng', {'1.1.1.2 Star'})
-        word_4 = DictionaryCreator.Word('moon star', 'eng', {'1.1.1.1 Moon', '1.1.1.2 Star'})
+        word_1 = Word('moon', 'eng', {'1.1.1.1 1'})
+        word_2 = Word('lunar', 'eng', {'1.1.1.1 1'})
+        word_3 = Word('star', 'eng', {'1.1.1.2 1'})
+        word_4 = Word('moon star', 'eng', {'1.1.1.1 1', '1.1.1.2 1'})
 
         self.assertEqual(DictionaryCreator._group_words_by_qid({
             'moon': word_1,
@@ -69,12 +147,15 @@ class TestDictionaryCreator(TestCase):
             'star': word_3,
             'moon star': word_4,
         }), {
-            '1.1.1.1 Moon': ['moon', 'lunar', 'moon star'],
-            '1.1.1.2 Star': ['star', 'moon star'],
+            '1.1.1.1 1': ['moon', 'lunar', 'moon star'],
+            '1.1.1.2 1': ['star', 'moon star'],
         })
 
-    # def test__transliterate_word(self):
-    #     self.fail()
+    def test__transliterate_word(self):
+        self.assertEqual('chandrma', DictionaryCreator._transliterate_word(self._create_word('चंद्रमा', 'hin')))
+        self.assertEqual('nkshatr', DictionaryCreator._transliterate_word(self._create_word('नक्षत्र', 'hin')))
+        self.assertEqual('grh', DictionaryCreator._transliterate_word(self._create_word('ग्रह', 'hin')))
+        self.assertEqual('surya', DictionaryCreator._transliterate_word(self._create_word('सूर्य', 'hin')))
 
     # def test__apply_prediction(self):
     #     self.fail()
@@ -82,14 +163,57 @@ class TestDictionaryCreator(TestCase):
     # def test__weighted_resource_allocation_index(self):
     #     self.fail()
 
-    # def test__save_state(self):
-    #     self.fail()
+    def test__save_state(self):
+        # should not fail
+        self.dc._save_state()
 
-    # def test__load_state(self):
-    #     self.fail()
+    def test__load_state(self):
+        # should not fail
+        self.dc._load_state()
 
-    # def test__load_data(self):
-    #     self.fail()
+    def test__load_state_with_broken_file(self):
+        # create a broken dill file
+        file_path = os.path.join(self.dc.state_files_path, f'{self.dc.start_timestamp - 1}_word_graph.dill')
+        with open(file_path, 'w') as f:
+            f.write('broken file')
+
+        self.dc._load_state()
+
+        self.assertEqual(None, self.dc.word_graph)
+
+    def test__load_data(self):
+        self.dc._load_data()
+
+        self.assertEqual({'eng', 'fra'}, self.dc.sds_by_lang.keys())
+        self.assertEqual(9, len(self.dc.sds_by_lang['eng']))  # 7955 with all sds
+        self.assertEqual(9, len(self.dc.sds_by_lang['fra']))  # 7812 with all sds
+
+        self.assertEqual({'bid-eng-DBY-10', 'bid-fra-fob-10'}, self.dc.verses_by_bid.keys())
+        self.assertEqual('In the beginning God created the heavens and the earth.\n',
+                         self.dc.verses_by_bid['bid-eng-DBY-10'][0])
+        self.assertEqual('Au commencement, Dieu créa les cieux et la terre.\n',
+                         self.dc.verses_by_bid['bid-fra-fob-10'][0])
+
+    def test__load_data_with_missing_sds(self):
+        self.dc = self._create_dictionary_creator(['bid-eng-DBY-10', 'bid-deu-10'])
+
+        self.dc._load_data()
+
+        self.assertEqual({'eng', 'deu'}, self.dc.sds_by_lang.keys())
+        self.assertEqual(9, len(self.dc.sds_by_lang['eng']))
+        self.assertEqual(0, len(self.dc.sds_by_lang['deu']))
+
+        self.assertEqual({'bid-eng-DBY-10', 'bid-deu-10'}, self.dc.verses_by_bid.keys())
+        self.assertEqual('In the beginning God created the heavens and the earth.\n',
+                         self.dc.verses_by_bid['bid-eng-DBY-10'][0])
+        self.assertEqual('Im Anfang schuf Gott die Himmel und die Erde.\n', self.dc.verses_by_bid['bid-deu-10'][0])
+
+    def test__load_data_with_invalid_path(self):
+        self.dc.bids = ['bid-eng-DBY', 'bid-fra-fob']
+        self.dc.sd_path_prefix = 'test/data/invalid_path'
+
+        with self.assertRaises(FileNotFoundError):
+            self.dc._load_data()
 
     # def test__build_sds(self):
     #     self.fail()
@@ -101,11 +225,59 @@ class TestDictionaryCreator(TestCase):
     # def test__tokenize_verses(self):
     #     self.fail()
 
-    # def test__combine_alignments(self):
-    #     self.fail()
+    def test__combine_alignments(self):
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
+                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
+                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
+                 'face', 'of', 'the', 'water', '.'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
+                ['or', 'la', 'terre', 'était', 'informe', 'et', 'vide', ',', 'et', 'les', 'ténèbres', 'étaient',
+                 'à', 'la', 'surface', 'de', 'l', "'", 'abîme', ',', 'et', 'l', "'", 'esprit', 'de', 'dieu', 'se',
+                 'mouvait', 'sur', 'les', 'eaux', '.'],
+                [],
+                [],
+            ],
+        }
 
-    # def test_preprocess_data(self):
-    #     self.fail()
+        self.dc._combine_alignments()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
+
+    def test__combine_alignments_with_missing_verse(self):
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
+                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
+                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
+                 'face', 'of', 'the', 'water', '.'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
+                [],
+                [],
+                [],
+            ],
+        }
+
+        self.dc._combine_alignments()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
+
+    def test_preprocess_data(self):
+        self.dc.preprocess_data()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-eng-DBY-10_bpe.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/diag_bid-eng-DBY-10_bid-fra-fob-10_bpe.align'))
 
     # def test__add_directed_edge(self):
     #     self.fail()
@@ -116,14 +288,101 @@ class TestDictionaryCreator(TestCase):
     # def test__map_word_to_qid_bidirectionally(self):
     #     self.fail()
 
-    # def test__map_two_bibles(self):
-    #     self.fail()
+    def test__map_two_bibles(self):
+        self.dc.verses_by_bid = {
+            'bid-eng-DBY-10': [
+                'In the beginning...\n',
+                'And the earth...\n',
+                '\n',
+                '\n',
+            ],
+            'bid-fra-fob-10': [
+                'Au commencement...',
+                '\n',
+                '\n',
+                '\n',
+            ]
+        }
+        eng_word_1 = self._create_word('in', 'eng')
+        eng_word_2 = self._create_word('the', 'eng')
+        eng_word_3 = self._create_word('beginning', 'eng')
+        eng_word_4 = self._create_word('...', 'eng')
+        eng_word_5 = self._create_word('and', 'eng')
+        eng_word_6 = self._create_word('earth', 'eng', {'1.2 World'})
+        fra_word_1 = self._create_word('au', 'fra')
+        fra_word_2 = self._create_word('commencement', 'fra', {'8.4.6.1.1 Débuter'})
+        fra_word_3 = self._create_word('...', 'fra')
+        self.dc.words_by_text_by_lang = {
+            'eng': {
+                'in': eng_word_1,
+                'the': eng_word_2,
+                'beginning': eng_word_3,
+                '...': eng_word_4,
+                'and': eng_word_5,
+                'earth': eng_word_6,
+            },
+            'fra': {
+                'au': fra_word_1,
+                'commencement': fra_word_2,
+                '...': fra_word_3,
+            }
+        }
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', '...'],
+                ['and', 'the', 'earth', '...'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', '...'],
+                [],
+                [],
+                [],
+            ],
+        }
+        alignment = [
+            '0-0 1-0 2-1 3-2\n',
+            '0-0\n',
+            '0-0\n',
+            '0-0\n',
+        ]
+
+        self.dc._map_two_bibles(alignment, 'bid-eng-DBY-10', 'bid-fra-fob-10')
+
+        self.assertListEqual([(eng_word_1, 1), (eng_word_2, 1)],
+                             list(fra_word_1.get_aligned_words_and_counts(self.dc.words_by_text_by_lang)))
+        self.assertDictEqual({
+            'eng': {
+                'fra': {
+                    '8.4.6.1.1 Débuter': ', beginning'
+                }
+            },
+            'fra': {}
+        }, self.dc.aligned_wtxts_by_qid_by_lang_by_lang)
 
     # def test_map_words_to_qids(self):
     #     self.fail()
 
-    # def test_build_word_graph(self):
-    #     self.fail()
+    def test_build_word_graph(self):
+        self._initialize_5_german_words()
+
+        self.dc.build_word_graph()
+
+        self.assertEqual(self.dc.word_graph.number_of_nodes(), 10)
+        self.assertEqual(self.dc.word_graph.number_of_edges(), 9)
+
+    def test_build_word_graph_with_additional_languages(self):
+        # load languages that do not appear in the target languages
+        words = self._initialize_words_for_3_languages()
+        self.dc.build_word_graph()
+
+        # check if word_graph contains a certain node
+        [self.assertTrue(self.dc.word_graph.has_node(word)) for word in words['eng']]
+        [self.assertTrue(self.dc.word_graph.has_node(word)) for word in words['fra']]
+        [self.assertFalse(self.dc.word_graph.has_node(word)) for word in words['deu']]
+        self.assertEqual(self.dc.word_graph.number_of_nodes(), 6)
+        self.assertEqual(self.dc.word_graph.number_of_edges(), 7)
 
     # def test_plot_subgraph(self):
     #     self.fail()
@@ -143,35 +402,144 @@ class TestDictionaryCreator(TestCase):
     # def test__compute_link_score(self):
     #     self.fail()
 
-    def test__predict_lemmas(self):
-        self.dc.words_by_text_by_lang['fra']['boire'] = word_1 = DictionaryCreator.Word('boire', 'fra', set(), 3)
-        self.dc.words_by_text_by_lang['fra']['bu'] = word_2 = DictionaryCreator.Word('bu', 'fra', set(), 2)
-        self.dc.words_by_text_by_lang['fra']['buve'] = word_3 = DictionaryCreator.Word('buve', 'fra', set(), 1)
-        self.dc.words_by_text_by_lang['fra']['eau'] = word_4 = DictionaryCreator.Word('eau', 'fra', set(), 5)
-        self.dc.words_by_text_by_lang['fra']['eaux'] = word_5 = DictionaryCreator.Word('eaux', 'fra', set(), 4)
-        word_1.add_aligned_word(word_2)
-        word_1.add_aligned_word(word_3)
-        word_4.add_aligned_word(word_5)
+    def _create_word(self, text, lang, qids=None, occurrences_in_bible=1):
+        word = Word(text, lang, qids, occurrences_in_bible)
+        self.dc.words_by_text_by_lang[lang][text] = word
+        return word
+
+    def _initialize_4_german_words(self):
+        self.dc.target_langs = ['eng', 'deu']
+
+        eng_word_1_1 = self._create_word('pass each other', 'eng', None, 30)
+        eng_word_1_2 = self._create_word('passed each other', 'eng', None, 20)
+        eng_word_1_3 = self._create_word('passing each other', 'eng', None, 10)
+
+        deu_word_1_1 = self._create_word('aneinander vorbeigehen', 'deu', None, 40)
+        deu_word_1_2 = self._create_word('aneinander vorbeigegangen', 'deu', None, 30)
+        deu_word_1_3 = self._create_word('aneinander vorbeigehend', 'deu', None, 20)
+        deu_word_1_4 = self._create_word('aneinander vorbeigingen', 'deu', None, 10)
+
+        # correct edges
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_3, deu_word_1_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_4, 10)
+
+        # noisy edges
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_2, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_4, 5)
+
+    def _initialize_5_german_words(self):
+        self.dc.target_langs = ['eng', 'deu']
+
+        eng_word_1_1 = self._create_word('pass', 'eng',
+                                         {'4.2.6.2.1 Football, soccer 9', '4.7.2 Pass laws 1', '3.6.7 Test 2'}, 30)
+        eng_word_1_2 = self._create_word('passed', 'eng', None, 20)
+        eng_word_1_3 = self._create_word('passing', 'eng', {'3.4 Emotion 4', '3.6.7 Test 2'}, 10)
+        eng_word_2_1 = self._create_word('human being', 'eng', {'2 Person 1'}, 50)
+        eng_word_2_2 = self._create_word('human beings', 'eng', {'2 Person 1'}, 40)
+
+        deu_word_1_1 = self._create_word('vorbeigehen', 'deu', None, 30)
+        deu_word_1_2 = self._create_word('vorbeigegangen', 'deu', None, 20)
+        deu_word_1_3 = self._create_word('vorbeigehend', 'deu', None, 10)
+        deu_word_2_1 = self._create_word('mensch', 'deu', None, 50)
+        deu_word_2_2 = self._create_word('menschen', 'deu', None, 40)
+
+        # correct edges
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_2, deu_word_1_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_1_3, deu_word_1_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_2_2, deu_word_2_2, 10)
+
+        # noisy edges
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_2, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_1_3, 5)
+        self.dc._add_bidirectional_edge(eng_word_1_1, deu_word_2_2, 1)
+        self.dc._add_bidirectional_edge(eng_word_2_1, deu_word_2_2, 5)
+
+    def test__predict_lemma_links(self):
+        # designed to cover unlikely branches
+        self._initialize_4_german_words()
 
         self.dc.build_word_graph()
+        self.dc.plot_subgraph('eng', 'pass each other')
+        lemma_link_candidates = [
+            (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigingen'],
+             self.dc.words_by_text_by_lang['deu']['aneinander vorbeigegangen']),
+
+            (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehend'],
+             self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehen']),
+
+            (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigingen'],
+             self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehend']),
+        ]
+
+        self.dc._predict_lemma_links(lemma_link_candidates)
+
+        self.assertEqual({
+            'deu': {
+                'aneinander vorbeigegangen': 'aneinander vorbeigehen',
+                'aneinander vorbeigehen': 'aneinander vorbeigehen',
+                'aneinander vorbeigehend': 'aneinander vorbeigehen',
+                'aneinander vorbeigingen': 'aneinander vorbeigehen',
+            }
+        }, self.dc.base_lemma_by_wtxt_by_lang)
+        self.assertEqual({
+            'deu': {
+                'aneinander vorbeigehen': {
+                    'aneinander vorbeigehen',
+                    'aneinander vorbeigegangen',
+                    'aneinander vorbeigehend',
+                    'aneinander vorbeigingen',
+                },
+            }
+        }, self.dc.lemma_group_by_base_lemma_by_lang)
+
+    def test__predict_lemmas(self):
+        self._initialize_5_german_words()
+
+        self.dc.build_word_graph()
+        self.dc.plot_subgraph('eng', 'pass')
         self.dc._predict_lemmas()
 
         self.assertEqual({
-            'boire': 'boire',
-            'bu': 'bu',
-            'buve': 'buve',
-            'eau': 'eau',
-            'eaux': 'eaux',
-        }, self.dc.base_lemma_by_wtxt_by_lang['fra'], )
-        self.assertEqual({'boire': {'boire'}, 'bu': {'bu'}, 'buve': {'buve'}, 'eau': {'eau'}, 'eaux': {'eaux'}},
-                         self.dc.lemma_group_by_base_lemma_by_lang['fra'])
+            'eng': {
+                'human being': 'human being',
+                'human beings': 'human being',
+            },
+            'deu': {
+                'vorbeigehen': 'vorbeigehen',
+                'vorbeigegangen': 'vorbeigehen',
+                'vorbeigehend': 'vorbeigehen',
+                'mensch': 'mensch',
+                'menschen': 'mensch',
+            }
+        }, self.dc.base_lemma_by_wtxt_by_lang)
+        self.assertEqual({
+            'eng': {
+                'human being':
+                    {'human being', 'human beings'}
+            },
+            'deu': {
+                'vorbeigehen': {'vorbeigehen', 'vorbeigegangen', 'vorbeigehend'},
+                'mensch': {'mensch', 'menschen'}
+            }
+        }, self.dc.lemma_group_by_base_lemma_by_lang)
 
     def test__contract_lemmas(self):
-        self.dc.words_by_text_by_lang['fra']['boire'] = DictionaryCreator.Word('boire', 'fra', set(), 3)
-        self.dc.words_by_text_by_lang['fra']['bu'] = DictionaryCreator.Word('bu', 'fra', set(), 2)
-        self.dc.words_by_text_by_lang['fra']['buve'] = DictionaryCreator.Word('buve', 'fra', set(), 1)
-        self.dc.words_by_text_by_lang['fra']['eau'] = DictionaryCreator.Word('eau', 'fra', set(), 5)
-        self.dc.words_by_text_by_lang['fra']['eaux'] = DictionaryCreator.Word('eaux', 'fra', set(), 4)
+        # self._create_word('drink', 'eng', None, 3)
+        # self._create_word('drank', 'eng', None, 2)
+        # self._create_word('drunk', 'eng', None, 1)
+        # self._create_word('water', 'eng', None, 5)
+        # self._create_word('waters', 'eng', None, 4)
+
+        self._create_word('boire', 'fra', None, 3)
+        self._create_word('bu', 'fra', None, 2)
+        self._create_word('buve', 'fra', None, 1)
+        self._create_word('eau', 'fra', None, 5)
+        self._create_word('eaux', 'fra', None, 4)
 
         self.dc.base_lemma_by_wtxt_by_lang = {
             'eng': {
@@ -199,17 +567,165 @@ class TestDictionaryCreator(TestCase):
             }
         }
 
-        self.dc._contract_lemmas(load=False, save=False)
+        self.dc._contract_lemmas()
+        self.dc.build_word_graph()
+        self.dc.plot_subgraph('fra', 'boire')
 
         self.assertEqual(self.dc.words_by_text_by_lang['fra'].keys(), {'boire', 'eau'})
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['boire'].display_text, 'BOIRE (3)')
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['eau'].display_text, 'EAU (2)')
 
-    # def test_predict_links(self):
-    #     self.fail()
+    def test_predict_links_in_2_languages(self):
+        self._initialize_5_german_words()
 
-    # def test_train_tfidf_based_model(self):
-    #     self.fail()
+        self.dc.build_word_graph()
+        self.dc.predict_links()
+        self.dc.plot_subgraph('eng', 'pass')
+
+        self.assertDictEqual({
+            'deu': {
+                '2 Person 1': {
+                    'mensch': 0.8,
+                    'menschen': 0.7692307692307693
+                },
+                '3.4 Emotion 4': {
+                    'vorbeigehend': 0.8
+                },
+                '3.6.7 Test 2': {
+                    'menschen': 0.05405405405405406,
+                    'vorbeigegangen': 0.2777777777777778,
+                    'vorbeigehen': 0.6451612903225806,
+                    'vorbeigehend': 0.8
+                },
+                '4.2.6.2.1 Football, soccer 9': {
+                    'menschen': 0.05405405405405406,
+                    'vorbeigegangen': 0.2777777777777778,
+                    'vorbeigehen': 0.6451612903225806,
+                    'vorbeigehend': 0.2777777777777778
+                },
+                '4.7.2 Pass laws 1': {
+                    'menschen': 0.05405405405405406,
+                    'vorbeigegangen': 0.2777777777777778,
+                    'vorbeigehen': 0.6451612903225806,
+                    'vorbeigehend': 0.2777777777777778
+                }}
+        }, dict(self.dc.top_scores_by_qid_by_lang))
+
+    def _initialize_words_for_3_languages(self):
+        eng_word_1 = self._create_word('drink', 'eng', {'5.2.2.7 Drink 1', '5.2.3.6 Beverage 1'}, 3)
+        eng_word_2 = self._create_word('water', 'eng', {'1.2.3 Solid, liquid, gas 2'}, 2)
+        eng_word_3 = self._create_word('the', 'eng', {'9.2.3.5 Demonstrative pronouns 1'}, 100)
+        fra_word_1 = self._create_word('boire', 'fra', None, 3)
+        fra_word_2 = self._create_word('eau', 'fra', None, 5)
+        fra_word_3 = self._create_word('les', 'fra', None, 100)
+        deu_word_1 = self._create_word('trinken', 'deu', None, 3)
+        deu_word_2 = self._create_word('wasser', 'deu', None, 2)
+        deu_word_3 = self._create_word('die', 'deu', None, 100)
+
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1, deu_word_1, 10)
+        self.dc._add_bidirectional_edge(fra_word_1, deu_word_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_2, deu_word_2, 10)
+        self.dc._add_bidirectional_edge(fra_word_2, deu_word_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_3, fra_word_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_3, deu_word_3, 10)
+        self.dc._add_bidirectional_edge(fra_word_3, deu_word_3, 10)
+
+        # add some noise
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(eng_word_1, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(eng_word_2, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_1, eng_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_1, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_2, eng_word_3, 2)
+        self.dc._add_bidirectional_edge(fra_word_2, deu_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_1, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_1, eng_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_2, fra_word_3, 2)
+        self.dc._add_bidirectional_edge(deu_word_2, eng_word_3, 2)
+
+        return {
+            'eng': [eng_word_1, eng_word_2, eng_word_3],
+            'fra': [fra_word_1, fra_word_2, fra_word_3],
+            'deu': [deu_word_1, deu_word_2, deu_word_3]
+        }
+
+    def test_predict_links_in_3_languages(self):
+        self.dc.target_langs = ['eng', 'fra', 'deu']
+        self._initialize_words_for_3_languages()
+
+        self.dc.build_word_graph()
+        self.dc.predict_links()
+        self.dc.plot_subgraph('eng', 'the')
+
+        self.assertDictEqual({
+            'deu': {
+                '1.2.3 Solid, liquid, gas 2': {
+                    'wasser': 0.8333333333333334,
+                    'die': 0.15384615384615385,
+                },
+                '5.2.2.7 Drink 1': {
+                    'trinken': 0.8333333333333334,
+                    'die': 0.15384615384615385,
+                },
+                '5.2.3.6 Beverage 1': {
+                    'trinken': 0.8333333333333334,
+                    'die': 0.15384615384615385,
+                },
+                '9.2.3.5 Demonstrative pronouns 1': {
+                    'die': 0.7142857142857143,
+                    'trinken': 0.15384615384615385,
+                    'wasser': 0.15384615384615385
+                }},
+            'fra': {
+                '1.2.3 Solid, liquid, gas 2': {
+                    'eau': 0.8333333333333334,
+                    'les': 0.15384615384615385,
+                },
+                '5.2.2.7 Drink 1': {
+                    'boire': 0.8333333333333334,
+                    'les': 0.15384615384615385,
+                },
+                '5.2.3.6 Beverage 1': {
+                    'boire': 0.8333333333333334,
+                    'les': 0.15384615384615385,
+                },
+                '9.2.3.5 Demonstrative pronouns 1': {
+                    'les': 0.7142857142857143,
+                    'boire': 0.15384615384615385,
+                    'eau': 0.15384615384615385,
+                }}
+        }, dict(self.dc.top_scores_by_qid_by_lang))
+
+    def test_train_tfidf_based_model(self):
+        self.dc.aligned_wtxts_by_qid_by_lang_by_lang = {
+            'eng': {
+                'eng': {
+                    '4.9.6 1': ', heaven, and, heaven',
+                    '1.2 1': ', earth, earth, earth',
+                }
+            },
+            'fra': {
+                'eng': {
+                    '1.2.3 1': ', eaux, eaux, les, eaux, les, eaux, les, eaux, avec, les, eaux, les, eaux, eaux',
+                    '8.3.3.2 6': ', ténèbres, ténèbres, ténèbres',
+                }
+            }
+        }
+
+        self.dc.train_tfidf_based_model()
+
+        self.assertEqual({
+            'eng': {'1.2 1': {'earth': 1.0},
+                    '4.9.6 1': {'and': 0.447213595499958,
+                                'heaven': 0.894427190999916}},
+            'fra': {'1.2.3 1': {'avec': 0.10540925533894598,
+                                'eaux': 0.8432740427115678,
+                                'les': 0.5270462766947299},
+                    '8.3.3.2 6': {'ténèbres': 1.0}}
+        }, self.dc.top_scores_by_qid_by_lang)
 
     # def test__filter_target_sds_with_threshold(self):
     #     self.fail()
@@ -217,11 +733,40 @@ class TestDictionaryCreator(TestCase):
     # def test__compute_f1_score(self):
     #     self.fail()
 
+    def test__compute_f1_score_without_target_semantic_domains(self):
+        result = self.dc._compute_f1_score(None, 'deu')
+        self.assertEqual(None, result)
+
     # def test__load_test_data(self):
     #     self.fail()
 
-    # def test__compute_mean_reciprocal_rank(self):
-    #     self.fail()
+    def test__compute_mean_reciprocal_rank(self):
+        self._create_word('moon', 'eng', {'1.1.1.1 1'})
+        self._create_word('lunar', 'eng', {'1.1.1.1 1'})
+        self._create_word('star', 'eng', {'1.1.1.2 1'})
+        self._create_word('moon star', 'eng', {'1.1.1.1 1', '1.1.1.2 1'})
+
+        self.dc.question_by_qid_by_lang['eng']['1.1.1.1 1'] = 'What words refer to the moon?'
+        self.dc.question_by_qid_by_lang['eng']['1.1.1.2 1'] = 'What words are used to refer to the stars?'
+
+        self.dc.top_scores_by_qid_by_lang = {
+            'eng': {
+                '1.1.1.1 1': {'moon': 0.5, 'lunar': 0.4, 'moon star': 0.3},
+                '1.1.1.2 1': {'moon star': 0.2, 'star': 0.1},
+            }
+        }
+
+        mean_reciprocal_rank = self.dc._compute_mean_reciprocal_rank('eng', True)
+
+        self.assertEqual(0.75, mean_reciprocal_rank)
+
+    def test__compute_mean_reciprocal_rank_without_target_semantic_domains(self):
+        result = self.dc._compute_mean_reciprocal_rank('urd')
+        self.assertEqual(None, result)
 
     # def test_evaluate(self):
     #     self.fail()
+
+    def test_evaluate_without_source_semantic_domains(self):
+        self.dc.evaluate()
+        self.assertDictEqual({}, self.dc.evaluation_results_by_lang)

@@ -2,7 +2,9 @@ import math
 import os
 import re
 import subprocess
-from collections import defaultdict, Counter
+import time
+from collections import defaultdict
+from pickle import UnpicklingError
 
 import dill
 import matplotlib.patches as mpatches
@@ -22,57 +24,85 @@ from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
 from tqdm import tqdm
 
+from word import Word
+
 
 class DictionaryCreator(object):
-    class Word:
-        def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
-            self.text = text
-            self.iso_language = lang
-            assert (type(qids) == set)
-            self.qids = set() if qids is None else qids
-            self.occurrences_in_bible = occurrences_in_bible
-            self.display_text = text
-            self._aligned_words = Counter()
+    BIBLES_BY_BID = {
+        'bid-eng-asvbt': 'eng-engasvbt.txt',
+        'bid-eng-asv': 'eng-eng-asv.txt',
+        'bid-eng-BBE': 'eng-engBBE.txt',
+        'bid-eng-Brenton': 'eng-eng-Brenton.txt',
+        'bid-eng-DBY': 'eng-engDBY.txt',
+        'bid-eng-DRA': 'eng-engDRA.txt',
+        'bid-eng-gnv': 'eng-enggnv.txt',
+        'bid-eng-jps': 'eng-engjps.txt',
+        'bid-eng-kjv2006': 'eng-eng-kjv2006.txt',
+        'bid-eng-kjvcpb': 'eng-engkjvcpb.txt',
+        'bid-eng-kjv': 'eng-eng-kjv.txt',
+        'bid-eng-lee': 'eng-englee.txt',
+        'bid-eng-lxx2012': 'eng-eng-lxx2012.txt',
+        'bid-eng-lxxup': 'eng-englxxup.txt',
+        'bid-eng-noy': 'eng-engnoy.txt',
+        'bid-eng-oebcw': 'eng-engoebcw.txt',
+        'bid-eng-oebus': 'eng-engoebus.txt',
+        'bid-eng-oke': 'eng-engoke.txt',
+        'bid-eng-rv': 'eng-eng-rv.txt',
+        'bid-eng-tnt': 'eng-engtnt.txt',
+        'bid-eng-uk-lxx2012': 'eng-eng-uk-lxx2012.txt',
+        'bid-eng-webbe': 'eng-eng-webbe.txt',
+        'bid-eng-web-c': 'eng-eng-web-c.txt',
+        'bid-eng-webpb': 'eng-engwebpb.txt',
+        'bid-eng-webp': 'eng-engwebp.txt',
+        'bid-eng-webster': 'eng-engwebster.txt',
+        'bid-eng-web': 'eng-eng-web.txt',
+        'bid-eng-wmbb': 'eng-engwmbb.txt',
+        'bid-eng-wmb': 'eng-engwmb.txt',
+        'bid-eng-Wycliffe': 'eng-engWycliffe.txt',
+        'bid-eng-ylt': 'eng-engylt.txt',
+        'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
+        'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
+        'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
 
-        def __str__(self):
-            return f'{self.iso_language}: {self.text}'
+        'bid-fra-fob': 'fra-fra_fob.txt',
+        'bid-fra-lsg': 'fra-fraLSG.txt',
 
-        def get_aligned_words_and_counts(self, words_by_text_by_lang):
-            for word_str, count in self._aligned_words.items():
-                lang, wtxt = word_str.split(': ')
-                word = words_by_text_by_lang[lang][wtxt]
-                yield word, count
+        'bid-spa': 'spa-spaRV1909.txt',
+        'bid-ind': 'ind-ind.txt',
+        'bid-tel': 'tel-telirv.txt',
+        'bid-tha': 'tha-thaKJV.txt',
+        'bid-hin': 'hin-hinirv.txt',
+        'bid-nep': 'nep-nepulb.txt',
+        'bid-urd': 'urd-urdgvu.txt',
 
-        def add_aligned_word(self, word, count=1):
-            # caution: this is not symmetric
-            self._aligned_words[str(word)] += count
+        'bid-deu': 'no semdoms available/deu-deuelo.txt',
+        'bid-rus': 'no semdoms available/rus-russyn.txt',
+        'bid-vie': 'no semdoms available/vie-vie1934.txt',
+        'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
+        'bid-swp': 'no semdoms available/swp-swp.txt',
+    }
 
-        def remove_alignment(self, word):
-            del self._aligned_words[str(word)]
-
-        def merge_words(self, words):
-            for word in words:
-                self.qids.update(
-                    word.qids)  # todo: weight qids by occurrences in bible when adding semdoms as nodes to graph
-                self.occurrences_in_bible += word.occurrences_in_bible
-                self._aligned_words += word._aligned_words
-            self.display_text = f'{self.text.upper()} ({len(words) + 1})'
-
-    def __init__(self, bibles_by_bid, score_threshold=0.5):
-        self.bibles_by_bid = bibles_by_bid
-        self.bids = list(bibles_by_bid.keys())
+    def __init__(self, bids, score_threshold=0.5,
+                 state_files_path='data/0_state',
+                 aligned_bibles_path='data/1_aligned_bibles',
+                 sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
+        self.bids = bids
+        self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
         self.source_bid = self.bids[0]
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
             ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
-        self.data_path = 'data'
-        self.state_files_path = os.path.join(self.data_path, '0_state')
+        self.state_files_path = state_files_path
+        self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
         self.eng_lemmatizer = WordNetLemmatizer()
         self.vectorizer = TfidfVectorizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
+        self.sd_path_prefix = sd_path_prefix
+        self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
+        self.num_verses = 41899
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -84,18 +114,21 @@ class DictionaryCreator(object):
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
 
-        # Not saved data (plotting)
+        # Saved data (graph building)
         self.word_graph = None
 
         # Saved data (lemmas)
         self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
         self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
 
-        # Not saved data (predicting links)
-        self.strength_by_lang_by_word = defaultdict(lambda: defaultdict(float))
+        # Saved data (predicting links)
+        self.strength_by_lang_by_wtxt_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
 
         # Saved data (training)
         self.top_scores_by_qid_by_lang = defaultdict(dict)
+
+        # Saved data (evaluation)
+        self.evaluation_results_by_lang = defaultdict(dict)
 
         # Stores which variables have changed since they have last been saved to a file
         self.changed_variables = set()
@@ -119,20 +152,18 @@ class DictionaryCreator(object):
         return word.display_text
 
     @staticmethod
-    def _apply_prediction(graph, func, ebunch=None):
+    def _apply_prediction(func, ebunch):
         """Applies the given function to each edge in the specified iterable
         of edges.
         """
-        if ebunch is None:
-            ebunch = nx.non_edges(graph)
         return ((u, v, func(u, v)) for u, v in ebunch)
 
-    def _weighted_resource_allocation_index(self, ebunch=None):
+    def _weighted_resource_allocation_index(self, ebunch):
         r"""Compute the weighted resource allocation index of all node pairs in ebunch.
 
         References
         ----------
-        .. resource allocati todo (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
+        .. resource allocation... todo (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
            Predicting missing links via local information.
            Eur. Phys. J. B 71 (2009) 623.
            https://arxiv.org/pdf/0901.0553.pdf
@@ -143,14 +174,18 @@ class DictionaryCreator(object):
                         self.word_graph.get_edge_data(common_neighbor, word_2)['weight'])
                        / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
                           self._compute_sum_of_weights(common_neighbor, word_2.iso_language))
-                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2))
+                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2)
+                       if
+                       word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore eng-eng-eng edges
 
-        return DictionaryCreator._apply_prediction(self.word_graph, predict, ebunch)
+        return DictionaryCreator._apply_prediction(predict, ebunch)
 
     def _save_state(self):
+        if len(self.changed_variables) == 0:
+            return
         print('Saving state...')
 
-        # save newly changed class variables to a separate dill file
+        # save newly changed class variables to a separate dill file to speed up saving
         for variable_name in tqdm(self.changed_variables,
                                   desc='Saving class variables',
                                   total=len(self.changed_variables)):
@@ -158,12 +193,10 @@ class DictionaryCreator(object):
 
             def save_file(key=''):
                 if key:
-                    file_path = os.path.join(self.state_files_path, f'{variable_name}_{key}.dill')
+                    file_path = os.path.join(self.state_files_path,
+                                             f'{self.start_timestamp}_{variable_name}_{key}.dill')
                 else:
-                    file_path = os.path.join(self.state_files_path, f'{variable_name}.dill')
-
-                # make a backup copy
-                # os.system(f'cp {file_path} {file_path}')
+                    file_path = os.path.join(self.state_files_path, f'{self.start_timestamp}_{variable_name}.dill')
 
                 with open(file_path, 'wb') as state_file:
                     if key:
@@ -171,18 +204,31 @@ class DictionaryCreator(object):
                     else:
                         dill.dump(variable, state_file)
 
-            # if type(variable) is dict or type(variable) is defaultdict:
-            for key, value in tqdm(variable.items(),
-                                   desc=f'Saving {variable_name}',
-                                   total=len(variable),
-                                   leave=True,
-                                   position=0):
-                save_file(key)
-            # else:
-            #     save_file()
+            if type(variable) is dict or type(variable) is defaultdict:
+                for key, value in tqdm(variable.items(),
+                                       desc=f'Saving {variable_name}',
+                                       total=len(variable),
+                                       leave=True,
+                                       position=0):
+                    save_file(key)
+            else:
+                save_file()
 
         self.changed_variables.clear()
         print('State saved.')
+
+    def _find_most_recent_files(self):
+        # file format: {start_timestamp}_{variable_name}_{key}.dill
+        file_names = os.listdir(os.path.join(self.state_files_path))
+        timestamps = [file_name.split('_')[0] for file_name in file_names]
+        timestamps.sort()
+        if len(timestamps):
+            most_recent_timestamp = timestamps[-1]
+
+            # This dc should be newer than any other dc, and we do not need to load the own state.
+            assert (most_recent_timestamp < str(self.start_timestamp))
+
+        return [file_name for file_name in file_names if file_name.startswith(most_recent_timestamp)]
 
     def _load_state(self):
         if self.state_loaded:
@@ -190,34 +236,38 @@ class DictionaryCreator(object):
 
         print('Loading state...')
 
+        most_recent_files = self._find_most_recent_files()
+
         # load class variables from separate dill files
         for variable_name in ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang', 'question_by_qid_by_lang',
-                              'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang',
+                              'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang', 'word_graph',
                               'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
-                              'top_scores_by_qid_by_lang']:
+                              'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang',
+                              'evaluation_results_by_lang']:
             variable = getattr(self, variable_name)
-            if type(variable) is dict or type(variable) is defaultdict:
-                # get all matching file names in directory
-                file_names = os.listdir(os.path.join(self.state_files_path))
-                file_paths = [os.path.join(self.state_files_path, file_name) for file_name in file_names if
-                              file_name.startswith(variable_name)]
 
-                for file_path in file_paths:
-                    def load_file(fallback_value):
-                        try:
-                            return dill.load(state_file)
-                        except EOFError:
-                            print(f'{file_path} is broken. Skipping.')
-                            return fallback_value
-
+            def load_file(fallback_value, file_path):
+                try:
                     with open(file_path, 'rb') as state_file:
-                        # if len(file_paths) > 1:
-                        key = file_path.split('_')[-1].split('.')[0]
-                        assert (key not in ('lang', 'bid'))
-                        if key in self.target_langs or key in self.bids:
-                            variable[key] = load_file(None)
-                    # else:
-                    #     variable = load_file(variable)
+                        return dill.load(state_file)
+                except (EOFError, UnpicklingError):
+                    print(f'{file_path} is broken. Skipping.')
+                    return fallback_value
+
+            # get all matching file names in directory
+            file_paths = [os.path.join(self.state_files_path, file_name) for file_name in most_recent_files if
+                          '_'.join(file_name.split('_')[1:]).startswith(variable_name)]
+
+            if type(variable) is dict or type(variable) is defaultdict:
+                for file_path in file_paths:
+                    key = file_path.split('_')[-1].split('.')[0]
+                    assert (key not in ('lang', 'bid'))
+                    if key in self.target_langs or key in self.bids:
+                        variable[key] = load_file(None, file_path)
+            else:
+                if len(file_paths):
+                    assert (len(file_paths) == 1)
+                    setattr(self, variable_name, load_file(variable, file_paths[0]))
 
         # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between computing link scores and tf-idf scores
         # self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
@@ -235,15 +285,16 @@ class DictionaryCreator(object):
                 print(f'Skipped: SDs for {lang} already loaded')
                 continue
 
-            sd_path = f'../semdom extractor/output/semdom_qa_clean_{lang}.csv'
+            sd_path = f'{self.sd_path_prefix}_{lang}.csv'
             if os.path.isfile(sd_path):
                 self.sds_by_lang[lang] = pd.read_csv(sd_path)
             else:
-                print(f'WARNING: unable to load {sd_path}')
+                print(f'WARNING: Unable to load {sd_path}')
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
-                assert (lang in ('deu', 'rus', 'vie', 'tpi'))
+                if lang not in ('deu', 'rus', 'vie', 'tpi'):
+                    raise FileNotFoundError(f'Unable to load {sd_path}')
             self.changed_variables.add('sds_by_lang')
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
@@ -256,7 +307,7 @@ class DictionaryCreator(object):
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
                 self.changed_variables.add('verses_by_bid')
-            assert (len(self.verses_by_bid[bid]) == 41899)
+            assert (len(self.verses_by_bid[bid]) == self.num_verses)
 
     def _build_sds(self):
         # convert sd dataframe to dictionary
@@ -276,7 +327,7 @@ class DictionaryCreator(object):
                 wtxts = [wtxt.strip().lower() for wtxt in answer.split(',') if wtxt]
                 if lang == 'eng':
                     wtxts = self._lemmatize_english_verse(wtxts)
-                words = {wtxt: self.Word(wtxt.strip(), lang, {qid}) for wtxt in wtxts}
+                words = {wtxt: Word(wtxt.strip(), lang, {qid}) for wtxt in wtxts}
 
                 # add new words to words_by_text_by_lang
                 for word in words.values():
@@ -348,7 +399,7 @@ class DictionaryCreator(object):
                 if wtxt in self.words_by_text_by_lang[lang]:
                     self.words_by_text_by_lang[lang][wtxt].occurrences_in_bible += 1
                 else:
-                    self.words_by_text_by_lang[lang][wtxt] = self.Word(wtxt, lang, set(), 1)
+                    self.words_by_text_by_lang[lang][wtxt] = Word(wtxt, lang, set(), 1)
                 self.changed_variables.add('words_by_text_by_lang')
 
     def _combine_alignments(self):
@@ -359,12 +410,12 @@ class DictionaryCreator(object):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
 
-                aligned_bibles_file_path = f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align'
+                aligned_bibles_file_path = f'{self.aligned_bibles_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align'
                 if os.path.isfile(aligned_bibles_file_path):
                     print(f'Skipped: Aligned bibles file {aligned_bibles_file_path} already exists')
                     continue
 
-                combined_bibles_file_path = f'{self.data_path}/{bid_1}_{bid_2}_{self.tokenizer}.txt'
+                combined_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}.txt'
                 with open(combined_bibles_file_path, 'w') as combined_bibles:
                     for idx, (bid_1_wtxts, bid_2_wtxts) in tqdm(enumerate(
                             zip(self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2])),
@@ -373,15 +424,15 @@ class DictionaryCreator(object):
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0 and len(bid_1_wtxts) + len(bid_2_wtxts) > 0:
                             # verse is missing in only one bible
                             print('Missing verse - verses might be misaligned!', idx, bid_1_wtxts, bid_2_wtxts)
-                            pass
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0:
                             # verse is missing in both bibles
                             bid_1_wtxts = ['#placeholder#']
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
 
-                result = subprocess.run(['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer],
-                                        capture_output=True, text=True)
+                result = subprocess.run(
+                    ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer, self.aligned_bibles_path],
+                    capture_output=True, text=True)
                 # retrieve the final entropy and perplexity
                 matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
                 cross_entropy = float(matches.group(2))
@@ -398,8 +449,9 @@ class DictionaryCreator(object):
         if save:
             self._save_state()
 
-    def _add_directed_edge(self, word_1, word_2, count=1):
+    def _add_bidirectional_edge(self, word_1, word_2, count=1):
         word_1.add_aligned_word(word_2, count)
+        word_2.add_aligned_word(word_1, count)
         self.changed_variables.add('words_by_text_by_lang')
 
     def _map_word_to_qid(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score=None,
@@ -409,7 +461,12 @@ class DictionaryCreator(object):
                 self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
                 self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
             else:
-                score_by_wtxt_by_qid_by_lang[target_lang][new_qid][target_wtxt] = link_score
+                score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
+                if target_wtxt in score_by_wtxt:
+                    score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt],
+                                                     link_score)  # todo: find mathematically elegant solution than using just the highest link score (something like 0.7 and 0.3 --> 0.9)
+                else:
+                    score_by_wtxt[target_wtxt] = link_score
 
     def _map_word_to_qid_bidirectionally(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None,
                                          score_by_wtxt_by_qid_by_lang=None):
@@ -446,8 +503,7 @@ class DictionaryCreator(object):
                 word_1 = self.words_by_text_by_lang[lang_1][wtxt_1]
                 word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
-                self._add_directed_edge(word_1, word_2)
-                self._add_directed_edge(word_2, word_1)
+                self._add_bidirectional_edge(word_1, word_2)
 
     def map_words_to_qids(self, load=False, save=False):
         # map words in all target language bibles to semantic domains
@@ -459,7 +515,8 @@ class DictionaryCreator(object):
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
-                with open(f'{self.data_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align', 'r') as alignment_file:
+                with open(f'{self.aligned_bibles_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align',
+                          'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
@@ -472,21 +529,22 @@ class DictionaryCreator(object):
 
         # flatmap words
         word_nodes = [word for lang in self.words_by_text_by_lang
+                      if lang in self.target_langs  # ignore additional languages in graph
                       for word in self.words_by_text_by_lang[lang].values()]
 
         # get all edges for alignments between words in flat list
-        weighted_edges = []
-        for lang_1 in self.words_by_text_by_lang:
-            for word_1 in self.words_by_text_by_lang[lang_1].values():
-                for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
-                    if word_2.iso_language not in self.target_langs:  # hacky way to ignore additional languages in graph (instead of re-building the graph with only target languages)
-                        continue
-                    weighted_edges.append([word_1, word_2, count])
+        weighted_edges = set()
+        for word_1 in word_nodes:
+            for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
+                if word_2 not in word_nodes:
+                    continue
+                weighted_edges.add((word_1, word_2, count))
 
         # create graph structures with NetworkX
         self.word_graph = nx.Graph()
         self.word_graph.add_nodes_from(word_nodes)
         self.word_graph.add_weighted_edges_from(weighted_edges)
+        self.changed_variables.add('word_graph')
 
         if save:
             self._save_state()
@@ -541,7 +599,7 @@ class DictionaryCreator(object):
             displayed_subgraph.edges) + 1)  # necessary condition if graph is connected
 
         # set figure size heuristically
-        width = max(5, int(len(selected_nodes) / 2.2))
+        width = max(6, int(len(selected_nodes) / 2.2))
         plt.figure(figsize=(width, width))
 
         # use a different node color for each language
@@ -568,7 +626,6 @@ class DictionaryCreator(object):
             link_score = self._compute_link_score(edge[0], edge[1])
             color = 'green' if link_score >= self.score_threshold else 'gray'
             nx.draw_networkx_edges(displayed_subgraph, pos=pos, edgelist=[edge],
-                                   # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
                                    width=[math.log(edge[2]) + 1], alpha=0.5,
                                    edge_color=color)
 
@@ -613,18 +670,18 @@ class DictionaryCreator(object):
                         and word_1.iso_language != word_2.iso_language \
                         and (word_2, word_1) not in link_candidates:
                     link_candidates.add((word_1, word_2))
-                    if word_1.text == 'stöhnen' or word_2.text == 'stöhnen':
-                        print(word_1.text, word_2.text)
         return list(link_candidates)
 
     def _compute_sum_of_weights(self, word_1, lang_2):
         # compute sum of weights from word_1 to target_lang words in neighbors of word_1
-        # precompute strength sums to improve performance --> store them in cache self.strength_by_lang_by_word
-        if lang_2 not in self.strength_by_lang_by_word[word_1]:
-            self.strength_by_lang_by_word[word_1][lang_2] = sum(self.word_graph.get_edge_data(word_1, w)['weight']
-                                                                for w in self.word_graph.neighbors(word_1)
-                                                                if w.iso_language == lang_2)
-        return self.strength_by_lang_by_word[word_1][lang_2]
+        # precompute strength sums to improve performance --> store them in cache self.strength_by_lang_by_wtxt_by_lang
+        if lang_2 not in self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text]:
+            self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text][lang_2] = sum(
+                self.word_graph.get_edge_data(word_1, w)['weight']
+                for w in self.word_graph.neighbors(word_1)
+                if w.iso_language == lang_2)
+            self.changed_variables.add('strength_by_lang_by_wtxt_by_lang')
+        return self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text][lang_2]
 
     def _compute_link_score(self, word_1, word_2):
         # normalized edge weight = divide edge weight by the average sum of edge weights to words of the other language
@@ -636,17 +693,7 @@ class DictionaryCreator(object):
         avg_weights_sum = (sum_weights_1_to_2 + sum_weights_2_to_1) / 2
         return edge_weight / avg_weights_sum
 
-    def _predict_lemmas(self, load=False, save=False):
-        if load:
-            self._load_state()
-
-        if len(self.base_lemma_by_wtxt_by_lang):
-            print('Skipped: Lemmas were already predicted')
-            assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
-                    len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
-            return
-
-        lemma_link_candidates = self._find_lemma_link_candidates()
+    def _predict_lemma_links(self, lemma_link_candidates):
         # preds = nx.jaccard_coefficient(self.word_graph)
         # preds = nx.adamic_adar_index(self.word_graph)
         preds = self._weighted_resource_allocation_index(lemma_link_candidates)
@@ -660,23 +707,23 @@ class DictionaryCreator(object):
                 continue
             distance = edit_distance(wtxt_1, wtxt_2)
             if distance < max(len(wtxt_1), len(wtxt_2)) / 3:
-                # if source_wtxt in ('abgewandt', 'bricht') or target_wtxt in ('abgewandt', 'bricht'):
-                #     print(source_wtxt, target_wtxt)
-                # print(lang, distance, source_wtxt, target_wtxt, link_score)
-
-                # find the base lemma, which is the most occurring lemma
+                # find the base lemma, which is the most frequent lemma
                 base_lemma_1 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_1, wtxt_1)
                 base_lemma_2 = self.base_lemma_by_wtxt_by_lang[lang].get(wtxt_2, wtxt_2)
-                new_base_lemma = wtxt_1
                 words_by_text = self.words_by_text_by_lang[lang]
 
+                # start with word_1 as the assumed base lemma
+                new_base_lemma = wtxt_1
                 if word_1.occurrences_in_bible < word_2.occurrences_in_bible:
+                    # word_2 is more frequent than word_1
                     new_base_lemma = wtxt_2
                 if words_by_text[new_base_lemma].occurrences_in_bible \
                         < words_by_text[base_lemma_1].occurrences_in_bible:
+                    # word_1's base lemma is (even) more frequent
                     new_base_lemma = base_lemma_1
                 if words_by_text[new_base_lemma].occurrences_in_bible \
                         < words_by_text[base_lemma_2].occurrences_in_bible:
+                    # word_2's base lemma is (even) more frequent
                     new_base_lemma = base_lemma_2
 
                 # build a group of all lemmas that belong together
@@ -692,14 +739,23 @@ class DictionaryCreator(object):
                         del self.lemma_group_by_base_lemma_by_lang[lang][wtxt]
                 self.lemma_group_by_base_lemma_by_lang[lang][new_base_lemma] = new_lemma_group
 
-                self.changed_variables.add('base_lemma_by_wtxt_by_lang')
-                self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
-
         for lang in self.lemma_group_by_base_lemma_by_lang:
             # sort self.lemma_group_by_base_lemma_by_lang by key
             self.lemma_group_by_base_lemma_by_lang[lang] = dict(
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
-        self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
+
+    def _predict_lemmas(self, load=False, save=False):
+        if load:
+            self._load_state()
+
+        if len(self.base_lemma_by_wtxt_by_lang):
+            print('Skipped: Lemmas were already predicted')
+            assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
+                    len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
+            return
+
+        lemma_link_candidates = self._find_lemma_link_candidates()
+        self._predict_lemma_links(lemma_link_candidates)
 
         # validate lemmas
         for lang in self.lemma_group_by_base_lemma_by_lang:
@@ -712,6 +768,16 @@ class DictionaryCreator(object):
                 for lemma in lemma_group:
                     assert (self.base_lemma_by_wtxt_by_lang[lang][lemma] == base_lemma)
                     assert (lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang])
+
+        for lang in self.target_langs:
+            # if we found no lemmas for a language, at least create an empty dictionary to show that we tried finding them
+            if lang not in self.base_lemma_by_wtxt_by_lang:
+                self.base_lemma_by_wtxt_by_lang[lang] = dict()
+            if lang not in self.lemma_group_by_base_lemma_by_lang:
+                self.lemma_group_by_base_lemma_by_lang[lang] = defaultdict(set)
+
+        self.changed_variables.add('base_lemma_by_wtxt_by_lang')
+        self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
 
         if save:
             self._save_state()
@@ -751,24 +817,10 @@ class DictionaryCreator(object):
                     if lemma_wtxt != base_lemma_wtxt:
                         lemma_group_words.add(self.words_by_text_by_lang[lang][lemma_wtxt])
 
-                def _update_aligned_words(lemma_word, base_lemma_word):
-                    # replace references to the lemma group words with references to the lemma group node
-                    for aligned_word, count in self.words_by_text_by_lang[lang][lemma_word.text]. \
-                            get_aligned_words_and_counts(self.words_by_text_by_lang):
-                        aligned_word.remove_alignment(lemma_word)
-                        self._add_directed_edge(base_lemma_word, aligned_word, count)
-                    del self.words_by_text_by_lang[lang][lemma_word.text]
-
                 # contract words in the graph (i.e., merge all grouped lemma nodes into a single lemma group node)
-                base_lemma_word.merge_words(lemma_group_words)
-                _update_aligned_words(base_lemma_word, base_lemma_word)
+                base_lemma_word.merge_words(lemma_group_words, self.words_by_text_by_lang,
+                                            self.strength_by_lang_by_wtxt_by_lang, self.changed_variables)
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
-
-                print(base_lemma_word)
-                for lemma_word in lemma_group_words:
-                    print('---', lemma_word)
-                    assert (lemma_word != base_lemma_word)
-                    _update_aligned_words(lemma_word, base_lemma_word)
         self.changed_variables.add('words_by_text_by_lang')
 
         if save:
@@ -778,21 +830,6 @@ class DictionaryCreator(object):
         if load:
             self._load_state()
 
-        # link_candidates = [
-        #     (self.words_by_text_by_lang['fra']['eau'],
-        #      self.words_by_text_by_lang['deu']['wasser']),
-        #     (self.words_by_text_by_lang['eng']['water'],
-        #      self.words_by_text_by_lang['deu']['wasser']),
-        #     (self.words_by_text_by_lang['eng']['water'],
-        #      self.words_by_text_by_lang['fra']['eau']),
-        #
-        #     (self.words_by_text_by_lang['fra']['boire'],
-        #      self.words_by_text_by_lang['deu']['trinken']),
-        #     (self.words_by_text_by_lang['eng']['drink'],
-        #      self.words_by_text_by_lang['deu']['trinken']),
-        #     (self.words_by_text_by_lang['eng']['drink'],
-        #      self.words_by_text_by_lang['fra']['boire']),
-        # ]
         link_candidates = self._find_translation_link_candidates()
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
@@ -801,7 +838,6 @@ class DictionaryCreator(object):
             self._map_word_to_qid_bidirectionally(word_1.text, word_2.text, word_1.iso_language, word_2.iso_language,
                                                   link_score, score_by_wtxt_by_qid_by_lang)
 
-        self.top_scores_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
             if target_lang in self.top_scores_by_qid_by_lang:
                 print(f'Skipped: top {target_lang} scores already collected')
@@ -832,8 +868,7 @@ class DictionaryCreator(object):
             assert (tfidfs.shape[0] == len(aligned_wtxts_by_qid))
             for idx, tfidf in tqdm(enumerate(tfidfs),
                                    desc=f'Collecting top {target_lang} tf-idf scores',
-                                   total=tfidfs.shape[
-                                       0]):  # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
+                                   total=tfidfs.shape[0]):
                 qid = list(aligned_wtxts_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)
@@ -870,7 +905,7 @@ class DictionaryCreator(object):
         if len(gt_target_wtxts_by_qid) == 0:
             print(f'Cannot compute F1 score etc. for {target_lang} '
                   f'because no ground-truth target semantic domains have been loaded')
-            return
+            return None
 
         false_positives = []
         false_negatives = []
@@ -947,17 +982,18 @@ class DictionaryCreator(object):
         print(f'recall:    {recall:.3f} ({num_true_positive_wtxts} '
               f'/ {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found)')
 
-        f1 = 2 * (precision * recall) / (precision + recall)
+        f1 = 0.0 if precision * recall == 0 else 2 * (precision * recall) / (precision + recall)
         print(f'F1:        {f1:.3f}')
 
         # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # was actually found?
-        recall_adjusted = num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
+        recall_adjusted = 0.0 if num_true_positive_wtxts == 0 else num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
         print(f'recall*:   {recall_adjusted:.3f} ({num_true_positive_wtxts} '
               f'/ {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
               f'- that also appear in the target verses - found)')
 
-        f1_adjusted = 2 * (precision * recall_adjusted) / (precision + recall_adjusted)
+        f1_adjusted = 0.0 if precision * recall_adjusted == 0 else 2 * (precision * recall_adjusted) / (
+                    precision + recall_adjusted)
         print(f'F1*:       {f1_adjusted:.3f}\n')
 
         # How many of the gt target wtxts appear in the target verses?
@@ -993,7 +1029,7 @@ class DictionaryCreator(object):
 
     def _load_test_data(self, source_lang, target_lang):
         # load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation)
-        df_test = pd.read_csv(f'{self.data_path}/multilingual_semdom_dictionary.csv')
+        df_test = pd.read_csv(f'data/multilingual_semdom_dictionary.csv')
         df_test = df_test[[f'{source_lang}-000.txt', f'{target_lang}-000.txt']]
         df_test.columns = ['source_wtxt', 'target_wtxts']
         df_test = df_test[df_test['target_wtxts'].notna()]
@@ -1015,18 +1051,19 @@ class DictionaryCreator(object):
             return None
         target_qids = defaultdict(list)
         df_test = self._load_test_data(self.source_lang, target_lang)
-        for source_wtxt in tqdm(self.words_by_text_by_lang[self.source_lang].values(),
-                                desc=f'Filtering {target_lang} question ids',
-                                total=len(self.words_by_text_by_lang[self.source_lang]),
-                                disable=True):
-            target_wtxts = list(df_test.query(f'source_wtxt=="{source_wtxt.text}"')['target_wtxts'])
-            if len(target_wtxts) == 0:
+
+        for _, row in tqdm(df_test.iterrows(),
+                           desc=f'Filtering {target_lang} question ids',
+                           total=len(df_test),
+                           disable=True):
+            source_word = self.words_by_text_by_lang[self.source_lang].get(row['source_wtxt'], None)
+            if source_word is None:
                 continue
-            target_wtxts = target_wtxts[0]
-            for qid in source_wtxt.qids:
+            target_wtxts = row['target_wtxts']
+            for qid in source_word.qids:
                 if qid in self.top_scores_by_qid_by_lang[target_lang]:
                     target_qids[qid].extend(target_wtxts)
-                # some semantic domains are missing in the target sds because no aligned wtxts were found
+                # Some semantic domains are missing in the target sds because no aligned wtxts were found.
 
         # in all selected target top_scores, look for first ranked target wtxt that also appears in df_test (gt data)
         mean_reciprocal_rank = 0
@@ -1050,11 +1087,11 @@ class DictionaryCreator(object):
         print(f'MRR: {mean_reciprocal_rank:.3f}')
         return mean_reciprocal_rank
 
-    def evaluate(self, load=False, print_reciprocal_ranks=False):
+    def evaluate(self, save=False, load=False, print_reciprocal_ranks=False):
         if load:
             self._load_state()
+
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
-        results = dict()
         print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:
             print(f'\n\n--- Evaluation for {target_lang} ---')
@@ -1067,7 +1104,7 @@ class DictionaryCreator(object):
             precision, recall, f1, recall_adjusted, f1_adjusted = self._compute_f1_score(predicted_target_wtxts_by_qid,
                                                                                          target_lang)
             mean_reciprocal_rank = self._compute_mean_reciprocal_rank(target_lang, print_reciprocal_ranks)
-            results[target_lang] = {
+            self.evaluation_results_by_lang[target_lang] = {
                 'precision': precision,
                 'recall': recall,
                 'F1': f1,
@@ -1075,79 +1112,32 @@ class DictionaryCreator(object):
                 'F1*': f1_adjusted,
                 'MRR': mean_reciprocal_rank
             }
-        return results
+            self.changed_variables.add('evaluation_results_by_lang')
+
+        if save:
+            self._save_state()
+
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink', min_count=1,
+                          prediction_method='link prediction'):
+        if prediction_method not in ('link prediction', 'tfidf'):
+            raise NotImplementedError(f'Prediction method {prediction_method} not implemented.')
+
+        self.preprocess_data(load=load, save=save)
+        self.map_words_to_qids(load=load, save=save)
+
+        self.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
+        self._predict_lemmas(load=load, save=save)
+        self._contract_lemmas(load=load, save=save)
+        self.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
+        if prediction_method == 'link prediction':
+            self.predict_links(load=load, save=save)
+        else:  # tfidf
+            self.train_tfidf_based_model(load=load, save=save)
+        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=min_count)
+
+        self.evaluate(load=load, save=save, print_reciprocal_ranks=False)
 
 
-if __name__ == '__main__':
-    dc = DictionaryCreator(bibles_by_bid={
-        # 'bid-eng-asvbt': 'eng-engasvbt.txt',
-        # 'bid-eng-asv': 'eng-eng-asv.txt',
-        # 'bid-eng-BBE': 'eng-engBBE.txt',
-        # 'bid-eng-Brenton': 'eng-eng-Brenton.txt',
-        'bid-eng-DBY': 'eng-engDBY.txt',
-        # 'bid-eng-DBY-1000': '../../../dictionary_creator/data/1_test_data/eng-engDBY-1000-verses.txt',
-        # 'bid-eng-DRA': 'eng-engDRA.txt',
-        # 'bid-eng-gnv': 'eng-enggnv.txt',
-        # 'bid-eng-jps': 'eng-engjps.txt',
-        # 'bid-eng-kjv2006': 'eng-eng-kjv2006.txt',
-        # 'bid-eng-kjvcpb': 'eng-engkjvcpb.txt',
-        # 'bid-eng-kjv': 'eng-eng-kjv.txt',
-        # 'bid-eng-lee': 'eng-englee.txt',
-        # 'bid-eng-lxx2012': 'eng-eng-lxx2012.txt',
-        # 'bid-eng-lxxup': 'eng-englxxup.txt',
-        # 'bid-eng-noy': 'eng-engnoy.txt',
-        # 'bid-eng-oebcw': 'eng-engoebcw.txt',
-        # 'bid-eng-oebus': 'eng-engoebus.txt',
-        # 'bid-eng-oke': 'eng-engoke.txt',
-        # 'bid-eng-rv': 'eng-eng-rv.txt',
-        # 'bid-eng-tnt': 'eng-engtnt.txt',
-        # 'bid-eng-uk-lxx2012': 'eng-eng-uk-lxx2012.txt',
-        # 'bid-eng-webbe': 'eng-eng-webbe.txt',
-        # 'bid-eng-web-c': 'eng-eng-web-c.txt',
-        # 'bid-eng-webpb': 'eng-engwebpb.txt',
-        # 'bid-eng-webp': 'eng-engwebp.txt',
-        # 'bid-eng-webster': 'eng-engwebster.txt',
-        # 'bid-eng-web': 'eng-eng-web.txt',
-        # 'bid-eng-wmbb': 'eng-engwmbb.txt',
-        # 'bid-eng-wmb': 'eng-engwmb.txt',
-        # 'bid-eng-Wycliffe': 'eng-engWycliffe.txt',
-        # 'bid-eng-ylt': 'eng-engylt.txt',
-        # 'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
-        # 'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
-        # 'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
-
-        'bid-fra-fob': 'fra-fra_fob.txt',
-        # 'bid-fra-fob-1000': '../../../dictionary_creator/data/1_test_data/fra-fra_fob-1000-verses.txt',
-        # 'bid-fra-lsg': 'fra-fraLSG.txt',
-
-        # 'bid-spa': 'spa-spaRV1909.txt',
-        # 'bid-ind': 'ind-ind.txt',
-        # 'bid-tel': 'tel-telirv.txt',
-        # 'bid-tha': 'tha-thaKJV.txt',
-        # 'bid-hin': 'hin-hinirv.txt',
-        # 'bid-nep': 'nep-nepulb.txt',
-        # 'bid-urd': 'urd-urdgvu.txt',
-
-        # 'bid-deu': 'no semdoms available/deu-deuelo.txt',
-        # 'bid-rus': 'no semdoms available/rus-russyn.txt',,
-        # 'bid-vie': 'no semdoms available/vie-vie1934.txt',
-        # 'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
-        # 'bid-swp': 'no semdoms available/swp-swp.txt',
-    }, score_threshold=0.2)
-
-    load = False
-    save = False
-    dc.preprocess_data(load=load, save=save)
-    dc.map_words_to_qids(load=load, save=save)
-
-    dc.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
-    dc._predict_lemmas(load=load, save=save)
-    dc._save_state()
-    dc._contract_lemmas(load=load, save=save)
-    dc.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
-    dc.predict_links(load=load, save=save)
-    dc.plot_subgraph(lang='eng', text='drink', min_count=1)
-
-    # dc.train_tfidf_based_model(load=load, save=save)
-    dc.evaluate(load=load, print_reciprocal_ranks=False)
-    dc._save_state()
+if __name__ == '__main__':  # pragma: no cover
+    dc = DictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
+    dc.create_dictionary()
