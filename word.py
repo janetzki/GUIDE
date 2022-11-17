@@ -12,14 +12,13 @@ class Word(object):
         self._aligned_words = Counter()
 
     def __eq__(self, other):
-        if isinstance(other, Word):
-            return self.text == other.text \
-                   and self.iso_language == other.iso_language \
-                   and self.qids == other.qids \
-                   and self.occurrences_in_bible == other.occurrences_in_bible \
-                   and self.display_text == other.display_text \
-                   and self._aligned_words == other._aligned_words
-        return NotImplemented
+        return type(other) == Word \
+               and self.text == other.text \
+               and self.iso_language == other.iso_language \
+               and self.qids == other.qids \
+               and self.occurrences_in_bible == other.occurrences_in_bible \
+               and self.display_text == other.display_text \
+               and self._aligned_words == other._aligned_words
 
     def __hash__(self):
         return hash((self.iso_language, self.text))
@@ -55,13 +54,16 @@ class Word(object):
     def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_wtxt_by_lang, changed_variables):
         # todo: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
         self.display_text = f'{self.text.upper()} ({len(words) + 1})'
+        print(self.display_text)
         for word in words:
+            print(word)
             self.qids.update(
                 word.qids)  # todo: weight qids by occurrences in Bible when adding semdoms as nodes to graph
             self.occurrences_in_bible += word.occurrences_in_bible
             self._aligned_words += word._aligned_words
             self._update_aligned_words(word.iso_language, word, words_by_text_by_lang)
             strength_by_lang_by_wtxt_by_lang[word.iso_language].pop(word.text, None)  # remove cache entry
+        print('\n')
         self._update_aligned_words(self.iso_language, self, words_by_text_by_lang)
         strength_by_lang_by_wtxt_by_lang[self.iso_language].pop(self.text, None)  # remove cache entry
         changed_variables.add('words_by_text_by_lang')

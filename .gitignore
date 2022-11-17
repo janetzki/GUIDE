@@ -1,6 +1,7 @@
 .idea/
 .ipynb_checkpoints/
-.__pycache__/
+__pycache__/
 data/
 visualizations/
-test/event_log.txt
+event_log.txt
+fast_align/
