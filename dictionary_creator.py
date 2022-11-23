@@ -107,6 +107,9 @@ class DictionaryCreator(object):
         self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
         self.num_verses = 41899
 
+        # Saved data (general)
+        self.progress_log = []
+
         # Saved data (preprocessing)
         self.sds_by_lang = {}
         self.verses_by_bid = {}
@@ -242,13 +245,13 @@ class DictionaryCreator(object):
 
         print('WARNING: Loading might cause inconsistent behavior. '
               'To get predictable results, you should execute the entire program without loading.')
-        # assumably, loading word_graph is dangerous because the dc writes it at multiple places
         print('Loading state...')
 
         most_recent_files = self._find_most_recent_files()
 
         # load class variables from separate dill files
-        for variable_name in ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang', 'question_by_qid_by_lang',
+        for variable_name in ['progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
+                              'question_by_qid_by_lang',
                               'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang', 'word_graph',
                               'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
                               'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang',
@@ -453,15 +456,47 @@ class DictionaryCreator(object):
                 perplexity = float(matches.group(3))
                 print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
 
-    def preprocess_data(self, load=False, save=False):
+    def _check_already_done(self, target_progress, load):
         if load:
             self._load_state()
+
+        progress_list = [
+            'started',
+            'preprocessed data',
+            'mapped words to qids',
+            'built uncontracted word graph',
+            'predicted lemmas',
+            'contracted lemmas',
+            'built contracted word graph',
+            'predicted translation links',
+            'trained tfidf based model',
+            'evaluated',
+        ]  # todo: create class for TF-IDF based model and link based model
+        # assert a consistent order of progress steps
+        # for actual_step, expected_step in zip(self.progress_log, progress_list):
+        #     assert(actual_step == expected_step)
+        return target_progress in self.progress_log
+
+    def _set_progress(self, progress, save):
+        self.progress_log.append(progress)
+        self.changed_variables.add('progress_log')
+        if save:
+            self._save_state()
+
+    def execute_and_track_state(self, func, step_name=None, save=False, load=False, *args, **kwargs):
+        if step_name is None:
+            step_name = func.__name__
+        if self._check_already_done(step_name, load):
+            print(f'Skipped: {step_name} already done')
+            return
+        func(*args, **kwargs)
+        self._set_progress(step_name, save)
+
+    def preprocess_data(self):
         self._load_data()
         self._build_sds()
         self._tokenize_verses()
         self._combine_alignments()
-        if save:
-            self._save_state()
 
     def _add_bidirectional_edge(self, word_1, word_2, count=1):
         word_1.add_aligned_word(word_2, count)
@@ -470,15 +505,18 @@ class DictionaryCreator(object):
 
     def _map_word_to_qid(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score=None,
                          score_by_wtxt_by_qid_by_lang=None):
+        # map a target word to a qid by looking at the qids of the aligned source word
         for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
             if link_score is None:
+                # map word for tf-idf based model
                 self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
                 self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
             else:
+                # map word for link prediction based model
                 score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
                 if target_wtxt in score_by_wtxt:
                     score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt], link_score)
-                    # todo: find mathematically elegant solution than using just the highest link score
+                    # todo: find mathematically more elegant solution than using just the highest link score
                     #  (something like 0.7 and 0.3 --> 0.9)
                 else:
                     score_by_wtxt[target_wtxt] = link_score
@@ -493,13 +531,13 @@ class DictionaryCreator(object):
 
     def _map_two_bibles(self, alignment, bid_1, bid_2):
         # map words in two bibles to semantic domains
-        # Caveat: This function ignores wtxts that could not be aligned.
+        # Caveat: This function ignores wtxts that could not have been aligned.
         lang_1 = self._convert_bid_to_lang(bid_1)
         lang_2 = self._convert_bid_to_lang(bid_2)
 
         if lang_1 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2] \
                 or lang_2 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1]:
-            print(f'Skipped: {bid_1} and {bid_2} already mapped')
+            print(f'Skipped: {bid_1} and {bid_2} already mapped')  # todo: remove these skipped messages
             return
 
         for alignment_line, wtxts_1, wtxts_2 in tqdm(
@@ -520,11 +558,8 @@ class DictionaryCreator(object):
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
                 self._add_bidirectional_edge(word_1, word_2)
 
-    def map_words_to_qids(self, load=False, save=False):
+    def map_words_to_qids(self):
         # map words in all target language bibles to semantic domains
-        if load:
-            self._load_state()
-
         for bid_1 in self.bids:
             for bid_2 in self.bids:
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
@@ -535,13 +570,7 @@ class DictionaryCreator(object):
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
-        if save:
-            self._save_state()
-
-    def build_word_graph(self, load=False, save=False):
-        if load:
-            self._load_state()
-
+    def build_word_graph(self):
         # flatmap words
         word_nodes = [word for lang in self.words_by_text_by_lang
                       if lang in self.target_langs  # ignore additional languages in graph
@@ -560,9 +589,6 @@ class DictionaryCreator(object):
         self.word_graph.add_nodes_from(word_nodes)
         self.word_graph.add_weighted_edges_from(weighted_edges)
         self.changed_variables.add('word_graph')
-
-        if save:
-            self._save_state()
 
     def plot_subgraph(self, lang, text, min_count=1):
         filtered_word_nodes = [word for word in self.word_graph.nodes if word.iso_language in self.target_langs]
@@ -764,10 +790,7 @@ class DictionaryCreator(object):
                 set,
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
 
-    def _predict_lemmas(self, load=False, save=False):
-        if load:
-            self._load_state()
-
+    def _predict_lemmas(self):
         if len(self.base_lemma_by_wtxt_by_lang):
             print('Skipped: Lemmas were already predicted')
             assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
@@ -800,14 +823,8 @@ class DictionaryCreator(object):
         self.changed_variables.add('base_lemma_by_wtxt_by_lang')
         self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
 
-        if save:
-            self._save_state()
-
-    def _contract_lemmas(self, load=False, save=False):
+    def _contract_lemmas(self):
         # merge lemmas in same lemma groups together into a single node
-        if load:
-            self._load_state()
-
         assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
                 len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
 
@@ -845,13 +862,7 @@ class DictionaryCreator(object):
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
         self.changed_variables.add('words_by_text_by_lang')
 
-        if save:
-            self._save_state()
-
-    def predict_translation_links(self, load=False, save=False):
-        if load:
-            self._load_state()
-
+    def predict_translation_links(self):
         link_candidates = self._find_translation_link_candidates()
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
@@ -873,13 +884,7 @@ class DictionaryCreator(object):
                 self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 
-        if save:
-            self._save_state()
-
-    def train_tfidf_based_model(self, load=False, save=False):
-        if load:
-            self._load_state()
-
+    def train_tfidf_based_model(self):
         for target_lang in self.target_langs:
             if target_lang in self.top_scores_by_qid_by_lang:
                 print(f'Skipped: top {target_lang} tfidfs already collected')
@@ -903,9 +908,6 @@ class DictionaryCreator(object):
                 self.top_scores_by_qid_by_lang[target_lang][qid] = scores_by_wtxt
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 
-        if save:
-            self._save_state()
-
     def _filter_target_sds_with_threshold(self):
         # remove all target wtxts with a score (e.g., TF-IDF) below a threshold
         filtered_target_wtxts_by_qid_by_lang = defaultdict(dict)
@@ -927,11 +929,11 @@ class DictionaryCreator(object):
         if len(gt_target_wtxts_by_qid) == 0:
             print(f'Cannot compute F1 score etc. for {target_lang} '
                   f'because no ground-truth target semantic domains have been loaded')
-            return None
+            return None, None, None, None, None
 
         false_positives = []
         false_negatives = []
-        false_negatives_in_verses = []
+        false_negatives_in_verses = []  # only false negatives that appear in at least one verse
         for qid, wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
                                desc=f'Counting true positive words in {target_lang} semantic domains',
                                total=len(predicted_target_wtxts_by_qid),
@@ -961,6 +963,21 @@ class DictionaryCreator(object):
         false_positives.sort(key=lambda x: len(x[1]), reverse=True)
         false_negatives.sort(key=lambda x: len(x[1]), reverse=True)
         false_negatives_in_verses.sort(key=lambda x: len(x[1]), reverse=True)
+
+        # find words that cause most false positive matches
+        false_positives_by_wtxt = defaultdict(set)
+        for qid, elements in false_positives:
+            for wtxt, _2 in elements:
+                false_positives_by_wtxt[wtxt].add(qid)
+        false_positives_by_wtxt = sorted(false_positives_by_wtxt.items(), key=lambda x: len(x[1]), reverse=True)
+
+        # find words that cause most false negative matches
+        false_negatives_in_verses_by_wtxt = defaultdict(set)
+        for qid, elements in false_negatives_in_verses:
+            for wtxt, _2 in elements:
+                false_negatives_in_verses_by_wtxt[wtxt].add(qid)
+        false_negatives_in_verses_by_wtxt = sorted(false_negatives_in_verses_by_wtxt.items(), key=lambda x: len(x[1]),
+                                                   reverse=True)
 
         # # number of all false matches to facilitate error analysis during debugging
         # num_false_positives = sum([len(x[1]) for x in false_positives])
@@ -1113,10 +1130,7 @@ class DictionaryCreator(object):
         print(f'MRR: {mean_reciprocal_rank:.3f}')
         return mean_reciprocal_rank
 
-    def evaluate(self, save=False, load=False, print_reciprocal_ranks=False):
-        if load:
-            self._load_state()
-
+    def evaluate(self, print_reciprocal_ranks=False):
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
         print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:
@@ -1140,34 +1154,37 @@ class DictionaryCreator(object):
             }
             self.changed_variables.add('evaluation_results_by_lang')
 
-        if save:
-            self._save_state()
-
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_word='drink', min_count=1,
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1,
                           prediction_method='link prediction'):
         if prediction_method not in ('link prediction', 'tfidf'):
             raise NotImplementedError(f'Prediction method {prediction_method} not implemented.')
 
-        self.preprocess_data(load=load, save=save)
-        self.map_words_to_qids(load=load, save=save)
+        self.execute_and_track_state(self.preprocess_data, load=load, save=save)
+        self.execute_and_track_state(self.map_words_to_qids, load=load, save=save)
 
-        self.build_word_graph(load=load, save=save)  # build the graph with single words as nodes
-        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=min_count)
+        # build the graph with single words as nodes
+        self.execute_and_track_state(self.build_word_graph, step_name='build uncontracted word graph',
+                                     load=load, save=save)
 
-        self._predict_lemmas(load=load, save=save)
-        self._contract_lemmas(load=load, save=save)
-        self.build_word_graph(load=load, save=save)  # build the word graph with lemma groups as nodes
+        self.plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
+
+        self.execute_and_track_state(self._predict_lemmas, load=load, save=save)
+        self.execute_and_track_state(self._contract_lemmas, load=load, save=save)
+
+        # build the word graph with lemma groups as nodes
+        self.execute_and_track_state(self.build_word_graph, step_name='build contracted word graph',
+                                     load=load, save=save)
 
         if prediction_method == 'link prediction':
-            self.predict_translation_links(load=load, save=save)
+            self.execute_and_track_state(self.predict_translation_links, load=load, save=save)
         else:  # tfidf
-            self.train_tfidf_based_model(load=load, save=save)
-        self.plot_subgraph(lang=plot_word_lang, text=plot_word, min_count=min_count)
+            self.execute_and_track_state(self.train_tfidf_based_model, load=load, save=save)
+        self.plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
 
-        self.evaluate(load=load, save=save, print_reciprocal_ranks=False)
+        self.execute_and_track_state(self.evaluate, print_reciprocal_ranks=False)
 
 
 if __name__ == '__main__':  # pragma: no cover
     # dc = DictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     dc = DictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
-    dc.create_dictionary(load=False, save=False)
+    dc.create_dictionary(load=True, save=True, plot_wtxt='river')

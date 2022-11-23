@@ -50,10 +50,10 @@ class TestDictionaryCreatorFast(TestCase):
 
     def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink', min_count=1,
                            prediction_method='link prediction'):
-        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_word=plot_word,
+        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_wtxt=plot_word,
                              min_count=min_count, prediction_method=prediction_method)
-        self.assertFalse(
-            self._check_if_edge_weights_doubled())  # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
+        self.assertFalse(self._check_if_edge_weights_doubled())
+        # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
 
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
                                  min_count=1, prediction_method='link prediction',
@@ -101,7 +101,7 @@ class TestDictionaryCreatorFast(TestCase):
 
     def test_create_dictionary_with_invalid_input(self):
         with self.assertRaises(NotImplementedError):
-            self.dc.create_dictionary(save=True, load=False, plot_word_lang='eng', plot_word='drink',
+            self.dc.create_dictionary(save=True, load=False, plot_word_lang='eng', plot_wtxt='drink',
                                       prediction_method='invalid prediction method')
 
     def test_load_only_most_current_file(self):
@@ -730,7 +730,7 @@ class TestDictionaryCreatorFast(TestCase):
 
     def test__compute_f1_score_without_target_semantic_domains(self):
         result = self.dc._compute_f1_score(None, 'deu')
-        self.assertEqual(None, result)
+        self.assertEqual((None, None, None, None, None), result)
 
     # def test__load_test_data(self):
     #     self.fail()
