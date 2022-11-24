@@ -1,5 +1,5 @@
-from test_dictionary_creator import TestDictionaryCreator
-from tfidf_dictionary_creator import TfidfDictionaryCreator
+from src.dictionary_creator.tfidf_dictionary_creator import TfidfDictionaryCreator
+from test.dictionary_creator.test_dictionary_creator import TestDictionaryCreator
 
 
 class TestTfidfDictionaryCreator(TestDictionaryCreator):

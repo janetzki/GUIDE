@@ -2,7 +2,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
 
-from dictionary_creator import DictionaryCreator
+from src.dictionary_creator.dictionary_creator import DictionaryCreator
 
 
 class TfidfDictionaryCreator(DictionaryCreator):

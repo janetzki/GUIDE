@@ -3,8 +3,8 @@ from unittest import TestCase
 
 import networkx as nx
 
-from dictionary_creator import DictionaryCreator
-from word import Word
+from src.dictionary_creator.dictionary_creator import DictionaryCreator
+from src.word import Word
 
 
 class TestDictionaryCreator(TestCase):
@@ -13,11 +13,11 @@ class TestDictionaryCreator(TestCase):
         self.dc = None  # overwritten by child classes
 
         # delete all files in test/data/0_state
-        for file in os.listdir('../test/data/0_state'):
+        for file in os.listdir('data/0_state'):
             os.remove('../test/data/0_state/' + file)
 
         # delete all files in test/data/1_aligned_bibles
-        for file in os.listdir('../test/data/1_aligned_bibles'):
+        for file in os.listdir('data/1_aligned_bibles'):
             os.remove('../test/data/1_aligned_bibles/' + file)
 
         DictionaryCreator.BIBLES_BY_BID.update({

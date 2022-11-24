@@ -19,7 +19,7 @@ from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
 from tqdm import tqdm
 
-from word import Word
+from src.word import Word
 
 
 class DictionaryCreator(ABC):
@@ -383,7 +383,8 @@ class DictionaryCreator(ABC):
 
             assert (self.tokenizer == 'bpe')
             file = os.path.join(
-                self.base_path, '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
+                self.base_path,
+                '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
             tokenizer.pre_tokenizer = Whitespace()  # todo: try to delete this
             trainer = BpeTrainer()

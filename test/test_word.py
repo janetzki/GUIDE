@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from word import Word
+from src.word import Word
 
 
 class TestWord(TestCase):

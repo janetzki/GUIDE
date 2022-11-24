@@ -1,7 +1,7 @@
 import os
 
-from link_prediction_dictionary_creator import LinkPredictionDictionaryCreator
-from test_dictionary_creator import TestDictionaryCreator
+from src.dictionary_creator.link_prediction_dictionary_creator import LinkPredictionDictionaryCreator
+from test.dictionary_creator.test_dictionary_creator import TestDictionaryCreator
 
 
 class TestLinkPredictionDictionaryCreatorFast(TestDictionaryCreator):
@@ -89,7 +89,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestDictionaryCreator):
 
     def test__load_data_with_invalid_path(self):
         self.dc.bids = ['bid-eng-DBY', 'bid-fra-fob']
-        self.dc.sd_path_prefix = 'test/data/invalid_path'
+        self.dc.sd_path_prefix = '../test/data/invalid_path'
 
         with self.assertRaises(FileNotFoundError):
             self.dc._load_data()

@@ -8,7 +8,7 @@ from matplotlib.patches import Patch
 from nltk.metrics.distance import edit_distance
 from tqdm import tqdm
 
-from dictionary_creator import DictionaryCreator
+from src.dictionary_creator.dictionary_creator import DictionaryCreator
 
 
 class LinkPredictionDictionaryCreator(DictionaryCreator):
