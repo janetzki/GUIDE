@@ -82,14 +82,14 @@ class TestDictionaryCreator(TestCase):
         for lang in self.dc.sds_by_lang.keys():
             self.assertTrue(self.dc.sds_by_lang[lang].equals(dc_new.sds_by_lang[lang]))
         self.assertDictEqual(self.dc.verses_by_bid, dc_new.verses_by_bid)
-        self.assertDictEqual(self.dc.words_by_text_by_lang['fra']["'"]._aligned_words,
-                             dc_new.words_by_text_by_lang['fra']["'"]._aligned_words)
-        self.assertEqual(self.dc.words_by_text_by_lang['eng'].keys(), dc_new.words_by_text_by_lang['eng'].keys())
-        self.assertEqual(next(iter(self.dc.words_by_text_by_lang['eng'].keys())),
-                         next(iter(dc_new.words_by_text_by_lang['eng'].keys())))
-        for word in self.dc.words_by_text_by_lang['eng'].values():
-            self.assertEqual(word, dc_new.words_by_text_by_lang['eng'][word.text])
+
+        # might fail if the aligner behaves non-deterministically
+        for lang in self.dc.words_by_text_by_lang.keys():
+            self.assertEqual(self.dc.words_by_text_by_lang[lang].keys(), dc_new.words_by_text_by_lang[lang].keys())
+            for word in self.dc.words_by_text_by_lang[lang].values():
+                self.assertEqual(word, dc_new.words_by_text_by_lang[lang][word.text])
         self.assertDictEqual(self.dc.words_by_text_by_lang, dc_new.words_by_text_by_lang)
+
         self.assertDictEqual(self.dc.question_by_qid_by_lang, dc_new.question_by_qid_by_lang)
         self.assertDictEqual(self.dc.wtxts_by_verse_by_bid, dc_new.wtxts_by_verse_by_bid)
         self.assertDictEqual(self.dc.aligned_wtxts_by_qid_by_lang_by_lang, dc_new.aligned_wtxts_by_qid_by_lang_by_lang)

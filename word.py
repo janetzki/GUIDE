@@ -37,8 +37,6 @@ class Word(object):
 
     def add_aligned_word(self, word, count=1):
         # caution: this is not symmetric, todo: make this symmetric
-        if self.text == "'" and self.iso_language == 'fra' and word.text == 'the':
-            a = 3
         self._aligned_words[str(word)] += count
 
     def remove_alignment(self, word):

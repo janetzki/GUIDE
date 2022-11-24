@@ -425,7 +425,7 @@ class DictionaryCreator(ABC):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
 
-                aligned_bibles_file_path = f'{self.aligned_bibles_path}/diag_{bid_1}_{bid_2}_{self.tokenizer}.align'
+                aligned_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_diag.align'
                 if os.path.isfile(aligned_bibles_file_path):
                     print(f'Skipped: Aligned bibles file {aligned_bibles_file_path} already exists')
                     continue
