@@ -250,7 +250,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
             '0-0\n',
         ]
 
-        self.dc._map_two_bibles(alignment, 'bid-eng-DBY-10', 'bid-fra-fob-10')
+        self.dc._map_two_bibles_bidirectionally(alignment, 'bid-eng-DBY-10', 'bid-fra-fob-10')
 
         self.assertListEqual([(eng_word_1, 1), (eng_word_2, 1)],
                              list(fra_word_1.get_aligned_words_and_counts(self.dc.words_by_text_by_lang)))
@@ -260,7 +260,9 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
                     '8.4.6.1.1 Débuter': ', beginning'
                 }
             },
-            'fra': {}
+            'fra': {
+                'eng': {}
+            }
         }, self.dc.aligned_wtxts_by_qid_by_lang_by_lang)
 
     # def test__map_words_to_qids(self):
@@ -478,6 +480,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc.plot_subgraph('eng', 'pass')
 
         self.assertDictEqual({
+            'eng': {},
             'deu': {
                 '2 Person 1': {
                     'mensch': 0.8,
@@ -556,6 +559,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc.plot_subgraph('eng', 'the')
 
         self.assertDictEqual({
+            'eng': {},
             'deu': {
                 '1.2.3 Solid, liquid, gas 2': {
                     'wasser': 0.8333333333333334,
@@ -669,4 +673,5 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 class TestLinkPredictionDictionaryCreatorSlow(TestLinkPredictionDictionaryCreator):
     # This class is for slower test cases.
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
-        self._run_full_pipeline_twice(check_isomorphism=False, load_1=False, save_1=False, load_2=False, save_2=False)
+        self._run_full_pipeline_twice(check_isomorphism=False, load_1=False, save_1=False, load_2=False, save_2=False,
+                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')

@@ -228,12 +228,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
 
     def _predict_lemmas(self):
-        if len(self.base_lemma_by_wtxt_by_lang):
-            print('Skipped: Lemmas were already predicted')
-            assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
-                    len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
-            return
-
         lemma_link_candidates = self._find_lemma_link_candidates()
         self._predict_lemma_links(lemma_link_candidates)
 
@@ -264,16 +258,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         # merge lemmas in same lemma groups together into a single node
         assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
                 len(self.lemma_group_by_base_lemma_by_lang) == len(self.target_langs))
-
-        # check if we already contracted the lemmas for at least one target language (except English)
-        for lang in self.target_langs:
-            if lang == 'eng' or len(self.lemma_group_by_base_lemma_by_lang[lang]) == 0:
-                continue
-            sample_lemma_wtxt_group = next(iter(self.lemma_group_by_base_lemma_by_lang[lang].values()))
-            if any(wtxt not in self.words_by_text_by_lang[lang] for wtxt in sample_lemma_wtxt_group):
-                # there exists one lemma wtxt in sample_lemma_wtxt_group that is not in self.words_by_text_by_lang
-                print('Skipped: Lemma groups were already contracted')
-                return
 
         for lang in self.lemma_group_by_base_lemma_by_lang:
             if lang == 'eng':
@@ -309,9 +293,9 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                                                   link_score, score_by_wtxt_by_qid_by_lang)
 
         for target_lang in self.target_langs:
-            if target_lang in self.top_scores_by_qid_by_lang:
-                print(f'Skipped: top {target_lang} scores already collected')
-                continue
+
+            # at least create an empty dictionary to show that we tried predicting links
+            self.top_scores_by_qid_by_lang[target_lang] = dict()
 
             score_by_wtxt_by_qid = score_by_wtxt_by_qid_by_lang[target_lang]
             for qid, score_by_wtxt in tqdm(score_by_wtxt_by_qid.items(),

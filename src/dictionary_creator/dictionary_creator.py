@@ -215,7 +215,7 @@ class DictionaryCreator(ABC):
                 save_file()
 
         self.changed_variables.clear()
-        print('State saved.')
+        print('State saved.\n')
 
     def _find_most_recent_files(self):
         # file format: {start_timestamp}_{variable_name}_{key}.dill
@@ -286,10 +286,6 @@ class DictionaryCreator(ABC):
         languages = set([self._convert_bid_to_lang(bid) for bid in self.bids])
         for lang in tqdm(languages, desc='Loading semantic domains', total=len(languages)):
             # load sds
-            if lang in self.sds_by_lang:
-                print(f'Skipped: SDs for {lang} already loaded')
-                continue
-
             sd_path = f'{self.sd_path_prefix}_{lang}.csv'
             if os.path.isfile(sd_path):
                 self.sds_by_lang[lang] = pd.read_csv(sd_path)
@@ -304,10 +300,6 @@ class DictionaryCreator(ABC):
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
             # load bible verses
-            if bid in self.verses_by_bid:
-                print(f'Skipped: Bible {bid} already loaded')
-                continue
-
             with open(os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid]),
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
@@ -319,10 +311,6 @@ class DictionaryCreator(ABC):
         # optional: increase performance by querying wtxts from words_eng
         # optional: increase performance by using dataframe instead of dict
         for lang, sds in tqdm(self.sds_by_lang.items(), desc='Building semantic domains', total=len(self.sds_by_lang)):
-            if lang in self.words_by_text_by_lang:
-                print(f'Skipped: Words and SD questions for {lang} already loaded')
-                continue
-
             for index, row in sds.iterrows():
                 question = row.question.replace("'", '')
                 question = question.replace('"', '')
@@ -371,10 +359,6 @@ class DictionaryCreator(ABC):
 
     def _tokenize_verses(self):
         for bid in tqdm(self.bids, desc='Tokenizing verses', total=len(self.bids)):
-            if bid in self.wtxts_by_verse_by_bid:
-                print(f'Skipped: Bible {bid} already tokenized')
-                continue
-
             assert self.tokenizer == 'bpe'
             file = os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
@@ -450,16 +434,16 @@ class DictionaryCreator(ABC):
 
     def _check_already_done(self, target_progress, load):
         loaded_variables_by_step = {
-            '_preprocess_data': [self.sds_by_lang, self.verses_by_bid, self.words_by_text_by_lang,
-                                 self.question_by_qid_by_lang, self.wtxts_by_verse_by_bid],
-            '_map_words_to_qids': [self.aligned_wtxts_by_qid_by_lang_by_lang],
-            '_build_word_graph (raw)': [self.word_graph],
-            '_predict_lemmas': [self.base_lemma_by_wtxt_by_lang, self.lemma_group_by_base_lemma_by_lang],
+            '_preprocess_data': ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
+                                 'question_by_qid_by_lang', 'wtxts_by_verse_by_bid'],
+            '_map_words_to_qids': ['aligned_wtxts_by_qid_by_lang_by_lang'],
+            '_build_word_graph (raw)': ['word_graph'],
+            '_predict_lemmas': ['base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang'],
             '_contract_lemmas': [],
             '_build_word_graph (contracted)': [],
-            '_predict_translation_links': [self.strength_by_lang_by_wtxt_by_lang, self.top_scores_by_qid_by_lang],
-            '_train_tfidf_based_model': [self.top_scores_by_qid_by_lang],
-            '_evaluate': [self.evaluation_results_by_lang],
+            '_predict_translation_links': ['strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang'],
+            '_train_tfidf_based_model': ['top_scores_by_qid_by_lang'],
+            '_evaluate': ['evaluation_results_by_lang'],
         }
 
         if load:
@@ -473,10 +457,13 @@ class DictionaryCreator(ABC):
         for step in self.STEPS:
             if step == target_progress:
                 break
-            for loaded_variable in loaded_variables_by_step[step]:
+            for loaded_variable_name in loaded_variables_by_step[step]:
+                loaded_variable = getattr(self, loaded_variable_name)
                 assert loaded_variable is not None
                 if type(loaded_variable) in (dict, list, set, defaultdict):
                     assert len(loaded_variable) > 0
+                if loaded_variable_name.endswith('by_lang'):
+                    assert len(loaded_variable) == len(self.target_langs)
 
         return target_progress in self.progress_log
 
@@ -532,16 +519,17 @@ class DictionaryCreator(ABC):
             return
         self._map_word_to_qid(wtxt_2, wtxt_1, lang_2, lang_1, link_score, score_by_wtxt_by_qid_by_lang)
 
-    def _map_two_bibles(self, alignment, bid_1, bid_2):
+    def _map_two_bibles_bidirectionally(self, alignment, bid_1, bid_2):
         # map words in two bibles to semantic domains
         # Caveat: This function ignores wtxts that could not have been aligned.
         lang_1 = self._convert_bid_to_lang(bid_1)
         lang_2 = self._convert_bid_to_lang(bid_2)
 
-        if lang_1 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2] \
-                or lang_2 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1]:
-            print(f'Skipped: {bid_1} and {bid_2} already mapped')  # todo #12 remove these skipped messages
-            return
+        # at least create an empty dictionary to show that we tried aligning words
+        assert (lang_2 not in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1])
+        assert (lang_1 not in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2])
+        self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1][lang_2] = defaultdict(str)
+        self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][lang_1] = defaultdict(str)
 
         for alignment_line, wtxts_1, wtxts_2 in tqdm(
                 zip(alignment, self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2]),
@@ -571,7 +559,7 @@ class DictionaryCreator(ABC):
                 with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_diag.align',
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
-                    self._map_two_bibles(alignment, bid_1, bid_2)
+                    self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
 
     def _build_word_graph(self):
         # flatmap words
@@ -835,12 +823,13 @@ class DictionaryCreator(ABC):
                 'F1': f1,
                 'recall*': recall_adjusted,
                 'F1*': f1_adjusted,
-                'MRR': mean_reciprocal_rank
+                'MRR': mean_reciprocal_rank,
             }
             self.changed_variables.add('evaluation_results_by_lang')
 
     @abstractmethod
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink',
+                          min_count=1):  # pragma: no cover
         pass
 
 

@@ -52,13 +52,13 @@ class Word(object):
         del words_by_text_by_lang[lang][removed_word.text]
 
     def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_wtxt_by_lang, changed_variables):
-        # todo: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
+        # todo ~#3: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
         self.display_text = f'{self.text.upper()} ({len(words) + 1})'
         print(self.display_text)
         for word in words:
             print(word)
             self.qids.update(
-                word.qids)  # todo: weight qids by occurrences in Bible when adding semdoms as nodes to graph
+                word.qids)  # todo ~#3: weight qids by occurrences in Bible when adding semdoms as nodes to graph
             self.occurrences_in_bible += word.occurrences_in_bible
             self._aligned_words += word._aligned_words
             self._update_aligned_words(word.iso_language, word, words_by_text_by_lang)

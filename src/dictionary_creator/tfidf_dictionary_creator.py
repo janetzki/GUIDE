@@ -19,10 +19,6 @@ class TfidfDictionaryCreator(DictionaryCreator):
 
     def _train_tfidf_based_model(self):
         for target_lang in self.target_langs:
-            if target_lang in self.top_scores_by_qid_by_lang:
-                print(f'Skipped: top {target_lang} tfidfs already collected')
-                continue
-
             aligned_wtxts_by_qid = self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][self.source_lang]
             tfidfs = self.vectorizer.fit_transform(list(aligned_wtxts_by_qid.values()))
             assert tfidfs.shape[0] == len(aligned_wtxts_by_qid)

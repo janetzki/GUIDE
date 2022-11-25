@@ -24,7 +24,7 @@ def sdi_with_dictionary_lookup():
                 scored_qids.append((normalized_word, qid, question, tfidf))
     pp.pprint(scored_qids)
 
-    # TODO: evaluate identified semantic domains with verse-semdom mappings from human labeler
+    # todo ~#1: evaluate identified semantic domains with verse-semdom mappings from human labeler
 
 
 def sdi_with_word_clustering():
