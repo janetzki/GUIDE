@@ -831,9 +831,3 @@ class DictionaryCreator(ABC):
     def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink',
                           min_count=1):  # pragma: no cover
         pass
-
-
-if __name__ == '__main__':  # pragma: no cover
-    # dc = DictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
-    dc = DictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
-    dc.create_dictionary(load=True, save=True, plot_wtxt='river')
