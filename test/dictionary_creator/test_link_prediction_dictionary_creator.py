@@ -21,6 +21,10 @@ class TestLinkPredictionDictionaryCreator(AbstractTestDictionaryCreator):
         if check_isomorphism:
             self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph,
                                              edge_match=lambda x, y: x['weight'] == y['weight']))
+        self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
+        self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
+        self.assertEqual(sorted(self.dc.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)),
+                         sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self._check_if_edge_weights_doubled(self.dc)
         self._check_if_edge_weights_doubled(dc_new)
         return dc_new
@@ -74,8 +78,12 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc._load_state()
 
     def test__load_state_with_broken_file(self):
+        # create directory
+        directory = os.path.join(self.dc.state_files_base_path, str(int(self.dc.start_timestamp) - 1))
+        os.makedirs(directory)
+
         # create a broken dill file
-        file_path = os.path.join(self.dc.state_files_path, f'{self.dc.start_timestamp - 1}_word_graph.dill')
+        file_path = os.path.join(directory, 'word_graph.dill')
         with open(file_path, 'w') as f:
             f.write('broken file')
 
@@ -361,7 +369,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self._initialize_4_german_words()
 
         self.dc._build_word_graph()
-        self.dc.plot_subgraph('eng', 'pass each other')
+        self.dc._plot_subgraph('eng', 'pass each other')
         lemma_link_candidates = [
             (self.dc.words_by_text_by_lang['deu']['aneinander vorbeigingen'],
              self.dc.words_by_text_by_lang['deu']['aneinander vorbeigegangen']),
@@ -398,7 +406,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self._initialize_5_german_words()
 
         self.dc._build_word_graph()
-        self.dc.plot_subgraph('eng', 'pass')
+        self.dc._plot_subgraph('eng', 'pass')
         self.dc._predict_lemmas()
 
         self.assertEqual({
@@ -466,7 +474,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
         self.dc._contract_lemmas()
         self.dc._build_word_graph()
-        self.dc.plot_subgraph('fra', 'boire')
+        self.dc._plot_subgraph('fra', 'boire')
 
         self.assertEqual(self.dc.words_by_text_by_lang['fra'].keys(), {'boire', 'eau'})
         self.assertEqual(self.dc.words_by_text_by_lang['fra']['boire'].display_text, 'BOIRE (3)')
@@ -477,7 +485,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
         self.dc._build_word_graph()
         self.dc._predict_translation_links()
-        self.dc.plot_subgraph('eng', 'pass')
+        self.dc._plot_subgraph('eng', 'pass')
 
         self.assertDictEqual({
             'eng': {},
@@ -556,7 +564,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
         self.dc._build_word_graph()
         self.dc._predict_translation_links()
-        self.dc.plot_subgraph('eng', 'the')
+        self.dc._plot_subgraph('eng', 'the')
 
         self.assertDictEqual({
             'eng': {},
@@ -644,8 +652,8 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     def test_no_progress_loaded(self):
         with self.assertRaises(AssertionError):
-            self.dc.execute_and_track_state(self.dc._build_word_graph, step_name='_build_word_graph (raw)',
-                                            load=False, save=True)
+            self.dc._execute_and_track_state(self.dc._build_word_graph, step_name='_build_word_graph (raw)',
+                                             load=False, save=True)
 
     def test_inconsistent_state_loaded(self):
         # only word_graph has been loaded
@@ -655,9 +663,9 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
             '_build_word_graph (raw)',
         ]
         self.dc.word_graph = nx.Graph()
-        self.dc.execute_and_track_state(self.dc._preprocess_data, load=False, save=True)
+        self.dc._execute_and_track_state(self.dc._preprocess_data, load=False, save=True)
         with self.assertRaises(AssertionError):
-            self.dc.execute_and_track_state(self.dc._map_words_to_qids, load=False, save=True)
+            self.dc._execute_and_track_state(self.dc._map_words_to_qids, load=False, save=True)
 
     def test_inconsistent_step_order(self):
         # the step '_map_words_to_qids' is missing
@@ -667,7 +675,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         ]
         self.dc.word_graph = nx.Graph()
         with self.assertRaises(AssertionError):
-            self.dc.execute_and_track_state(self.dc._preprocess_data, load=False, save=True)
+            self.dc._execute_and_track_state(self.dc._preprocess_data, load=False, save=True)
 
 
 class TestLinkPredictionDictionaryCreatorSlow(TestLinkPredictionDictionaryCreator):

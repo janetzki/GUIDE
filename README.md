@@ -6,11 +6,11 @@ Create semantic domain dictionaries for low-resource languages
 
 ## Requirements
 
-* Python 3.6
+* Python 3.11
 
 ## Setup
 
-1. Install Python 3.6
+1. Install Python 3.11
 2. Install the requirements: `pip install -r requirements.txt`
 3. Download the [WordNet 3.0](https://wordnet.princeton.edu/wordnet/download/) database
 

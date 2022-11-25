@@ -1,13 +1,13 @@
 import os
 import re
 import subprocess
+import sys
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from pickle import UnpicklingError
 
 import dill
-import networkx as nx
 import pandas as pd
 from nltk import WordNetLemmatizer, pos_tag
 from nltk.corpus import wordnet
@@ -24,6 +24,14 @@ from src.word import Word
 
 class DictionaryCreator(ABC):
     STEPS = None  # Implemented by child classes
+
+    LOADED_VARIABLES_BY_STEP = {
+        '_preprocess_data': ['progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
+                             'question_by_qid_by_lang', 'wtxts_by_verse_by_bid'],
+        '_map_words_to_qids': ['aligned_wtxts_by_qid_by_lang_by_lang'],
+        '_evaluate': ['evaluation_results_by_lang'],
+    }
+
     BIBLES_BY_BID = {
         'bid-eng-asvbt': 'eng-engasvbt.txt',
         'bid-eng-asv': 'eng-eng-asv.txt',
@@ -89,18 +97,18 @@ class DictionaryCreator(ABC):
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
             ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
-        self.state_files_path = state_files_path
+        self.state_files_base_path = state_files_path
         self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
         self.eng_lemmatizer = WordNetLemmatizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
         self.sd_path_prefix = sd_path_prefix
-        self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
+        self.start_timestamp = str(time.time_ns() // 1000)  # current time in microseconds
         self.num_verses = 41899
 
         # Saved data (general)
-        self.progress_log = []
+        self.progress_log = []  # all completed steps
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -111,16 +119,6 @@ class DictionaryCreator(ABC):
 
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
-
-        # Saved data (graph building)
-        self.word_graph = None
-
-        # Saved data (lemmas)
-        self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
-        self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
-
-        # Saved data (predicting links)
-        self.strength_by_lang_by_wtxt_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
 
         # Saved data (training)
         self.top_scores_by_qid_by_lang = defaultdict(dict)
@@ -156,47 +154,27 @@ class DictionaryCreator(ABC):
         """
         return ((u, v, func(u, v)) for u, v in ebunch)
 
-    def _weighted_resource_allocation_index(self, ebunch):
-        r"""Compute the weighted resource allocation index of all node pairs in ebunch.
-
-        References
-        ----------
-        .. resource allocation... todo
-           (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
-
-           Predicting missing links via local information.
-           Eur. Phys. J. B 71 (2009) 623.
-           https://arxiv.org/pdf/0901.0553.pdf
-        """
-
-        def predict(word_1, word_2):
-            return sum((self.word_graph.get_edge_data(word_1, common_neighbor)['weight'] +
-                        self.word_graph.get_edge_data(common_neighbor, word_2)['weight'])
-                       / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
-                          self._compute_sum_of_weights(common_neighbor, word_2.iso_language))
-                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2)
-                       if word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore
-            # eng-eng-eng edges
-
-        return DictionaryCreator._apply_prediction(predict, ebunch)
-
     def _save_state(self):
         if len(self.changed_variables) == 0:
             return
-        print('Saving state...')
+        print('\nSaving state...')
+
+        # create directory if it doesn't exist
+        state_files_directory = os.path.join(self.state_files_base_path, self.start_timestamp)
+        if not os.path.exists(state_files_directory):
+            os.makedirs(state_files_directory)
 
         # save newly changed class variables to a separate dill file to speed up saving
         for variable_name in tqdm(self.changed_variables,
-                                  desc='Saving class variables',
+                                  desc='- Saving class variables',
                                   total=len(self.changed_variables)):
             variable = getattr(self, variable_name)
 
             def save_file(variable_key=''):
                 if variable_key:
-                    file_path = os.path.join(self.state_files_path,
-                                             f'{self.start_timestamp}_{variable_name}_{variable_key}.dill')
+                    file_path = os.path.join(state_files_directory, f'{variable_name}_{variable_key}.dill')
                 else:
-                    file_path = os.path.join(self.state_files_path, f'{self.start_timestamp}_{variable_name}.dill')
+                    file_path = os.path.join(state_files_directory, f'{variable_name}.dill')
 
                 with open(file_path, 'wb') as state_file:
                     if variable_key:
@@ -206,7 +184,7 @@ class DictionaryCreator(ABC):
 
             if type(variable) is dict or type(variable) is defaultdict:
                 for key in tqdm(variable.keys(),
-                                desc=f'Saving {variable_name}',
+                                desc=f'- Saving {variable_name}',
                                 total=len(variable),
                                 leave=True,
                                 position=0):
@@ -216,11 +194,11 @@ class DictionaryCreator(ABC):
 
         self.changed_variables.clear()
         print('State saved.\n')
+        sys.stdout.flush()
 
-    def _find_most_recent_files(self):
-        # file format: {start_timestamp}_{variable_name}_{key}.dill
-        file_names = os.listdir(os.path.join(self.state_files_path))
-        timestamps = [file_name.split('_')[0] for file_name in file_names]
+    def _find_state_directory(self):
+        # Directory names are timestamps. Find the most recent directory.
+        timestamps = os.listdir(self.state_files_base_path)
         timestamps.sort()
         most_recent_timestamp = None
         if len(timestamps):
@@ -229,57 +207,63 @@ class DictionaryCreator(ABC):
             # This dc should be newer than any other dc, and we do not need to load the own state.
             assert most_recent_timestamp < str(self.start_timestamp)
 
-        return [file_name for file_name in file_names if file_name.startswith(most_recent_timestamp)]
+        return most_recent_timestamp
 
     def _load_state(self):
+        # file path format: {state_files_base_path}/{start_timestamp}/{variable_name}_{key}.dill
         if self.state_loaded:
             return
 
-        print('WARNING: Loading might cause inconsistent behavior. '
-              'To get predictable results, you should execute the entire program without loading.')
-        print('Loading state...')
+        state_files_directory = self._find_state_directory()
+        if state_files_directory is None:
+            print('Skipped loading because no state files could be found.')
+            self.state_loaded = True
+            return
 
-        most_recent_files = self._find_most_recent_files()
+        print('Loading state...')
+        state_files_directory = os.path.join(self.state_files_base_path, state_files_directory)
+        file_names = os.listdir(state_files_directory)
+
+        # create set of all variables that have been saved
+        variable_names = set()
+        for variables in self.LOADED_VARIABLES_BY_STEP.values():
+            variable_names.update(variables)
 
         # load class variables from separate dill files
-        for variable_name in ['progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
-                              'question_by_qid_by_lang',
-                              'wtxts_by_verse_by_bid', 'aligned_wtxts_by_qid_by_lang_by_lang', 'word_graph',
-                              'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
-                              'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang',
-                              'evaluation_results_by_lang']:
+        for variable_name in variable_names:
             variable = getattr(self, variable_name)
 
             def load_file(fallback_value, path):
                 try:
                     with open(path, 'rb') as state_file:
                         file_content = dill.load(state_file)
-                        print(f'{path} loaded.')
+                        print(f'- {path} loaded.')
                         return file_content
                 except (EOFError, UnpicklingError):
-                    print(f'{path} is broken. Skipping.')
+                    print(f'- {path} is broken. Skipping.')
                     return fallback_value
 
             # get all matching file names in directory
-            file_paths = [os.path.join(self.state_files_path, file_name) for file_name in most_recent_files if
-                          '_'.join(file_name.split('_')[1:]).startswith(variable_name)]
+            file_names_for_variable = [os.path.join(state_files_directory, file_name) for file_name in file_names if
+                                       file_name.startswith(variable_name)]
 
             if type(variable) is dict or type(variable) is defaultdict:
-                for file_path in file_paths:
-                    key = file_path.split('_')[-1].split('.')[0]
+                for file_name in file_names_for_variable:
+                    key = file_name.split('_')[-1].split('.')[0]
                     assert key not in ('lang', 'bid')
                     if key in self.target_langs or key in self.bids:
-                        variable[key] = load_file(None, file_path)
+                        variable[key] = load_file(None, file_name)
             else:
-                if len(file_paths):
-                    assert len(file_paths) == 1
-                    setattr(self, variable_name, load_file(variable, file_paths[0]))
+                if len(file_names_for_variable):
+                    assert len(file_names_for_variable) == 1
+                    setattr(self, variable_name, load_file(variable, file_names_for_variable[0]))
 
         # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between
         #   computing link scores and tf-idf scores
 
         self.state_loaded = True
         print('State loaded.')
+        print('Progress:', self.progress_log, '\n')
 
     def _load_data(self):
         # load sds and bible verses for all languages
@@ -433,19 +417,6 @@ class DictionaryCreator(ABC):
                 print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
 
     def _check_already_done(self, target_progress, load):
-        loaded_variables_by_step = {
-            '_preprocess_data': ['sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
-                                 'question_by_qid_by_lang', 'wtxts_by_verse_by_bid'],
-            '_map_words_to_qids': ['aligned_wtxts_by_qid_by_lang_by_lang'],
-            '_build_word_graph (raw)': ['word_graph'],
-            '_predict_lemmas': ['base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang'],
-            '_contract_lemmas': [],
-            '_build_word_graph (contracted)': [],
-            '_predict_translation_links': ['strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang'],
-            '_train_tfidf_based_model': ['top_scores_by_qid_by_lang'],
-            '_evaluate': ['evaluation_results_by_lang'],
-        }
-
         if load:
             self._load_state()
 
@@ -457,7 +428,7 @@ class DictionaryCreator(ABC):
         for step in self.STEPS:
             if step == target_progress:
                 break
-            for loaded_variable_name in loaded_variables_by_step[step]:
+            for loaded_variable_name in self.LOADED_VARIABLES_BY_STEP[step]:
                 loaded_variable = getattr(self, loaded_variable_name)
                 assert loaded_variable is not None
                 if type(loaded_variable) in (dict, list, set, defaultdict):
@@ -473,7 +444,7 @@ class DictionaryCreator(ABC):
         if save:
             self._save_state()
 
-    def execute_and_track_state(self, func, step_name=None, save=False, load=False, *args, **kwargs):
+    def _execute_and_track_state(self, func, step_name=None, save=False, load=False, *args, **kwargs):
         if step_name is None:
             step_name = func.__name__
         if self._check_already_done(step_name, load):
@@ -498,7 +469,7 @@ class DictionaryCreator(ABC):
         # map a target word to a qid by looking at the qids of the aligned source word
         for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
             if link_score is None:
-                # map word for tf-idf based model
+                # map word for tf-idf based model # todo #12: refactor this
                 self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
                 self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
             else:
@@ -560,26 +531,6 @@ class DictionaryCreator(ABC):
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
-
-    def _build_word_graph(self):
-        # flatmap words
-        word_nodes = [word for lang in self.words_by_text_by_lang
-                      if lang in self.target_langs  # ignore additional languages in graph
-                      for word in self.words_by_text_by_lang[lang].values()]
-
-        # get all edges for alignments between words in flat list
-        weighted_edges = set()
-        for word_1 in word_nodes:
-            for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
-                if word_2.iso_language not in self.target_langs:
-                    continue
-                weighted_edges.add((word_1, word_2, count))
-
-        # create graph structures with NetworkX
-        self.word_graph = nx.Graph()
-        self.word_graph.add_nodes_from(word_nodes)
-        self.word_graph.add_weighted_edges_from(weighted_edges)
-        self.changed_variables.add('word_graph')
 
     def _filter_target_sds_with_threshold(self):
         # remove all target wtxts with a score (e.g., TF-IDF) below a threshold
@@ -805,7 +756,7 @@ class DictionaryCreator(ABC):
 
     def _evaluate(self, print_reciprocal_ranks=False):
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
-        print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
+        print(f'\n\n\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:
             print(f'\n\n--- Evaluation for {target_lang} ---')
             predicted_target_wtxts_by_qid = filtered_target_wtxts_by_qid_by_lang[target_lang]

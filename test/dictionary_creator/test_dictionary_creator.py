@@ -1,4 +1,5 @@
 import os
+import shutil
 from unittest import TestCase
 
 from src.dictionary_creator.dictionary_creator import DictionaryCreator
@@ -14,13 +15,13 @@ class AbstractTestDictionaryCreator(TestCase):
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
         os.chdir(project_root)
 
-        # delete all files in test/data/0_state
-        for file in os.listdir('test/data/0_state'):
-            os.remove('test/data/0_state/' + file)
+        # force delete all directories in test/data/0_state
+        for directory in os.listdir('test/data/0_state'):
+            shutil.rmtree(os.path.join('test/data/0_state', directory))
 
         # delete all files in test/data/1_aligned_bibles
         for file in os.listdir('test/data/1_aligned_bibles'):
-            os.remove('test/data/1_aligned_bibles/' + file)
+            os.remove(os.path.join('test/data/1_aligned_bibles', file))
 
         DictionaryCreator.BIBLES_BY_BID.update({
             'bid-eng-DBY-1000': '../../../dictionary_creator/test/data/eng-engDBY-1000-verses.txt',
@@ -81,10 +82,6 @@ class AbstractTestDictionaryCreator(TestCase):
         self.assertDictEqual(self.dc.question_by_qid_by_lang, dc_new.question_by_qid_by_lang)
         self.assertDictEqual(self.dc.wtxts_by_verse_by_bid, dc_new.wtxts_by_verse_by_bid)
         self.assertDictEqual(self.dc.aligned_wtxts_by_qid_by_lang_by_lang, dc_new.aligned_wtxts_by_qid_by_lang_by_lang)
-        self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
-        self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
-        self.assertEqual(sorted(self.dc.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)),
-                         sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(self.dc.evaluation_results_by_lang, dc_new.evaluation_results_by_lang)
         return dc_new

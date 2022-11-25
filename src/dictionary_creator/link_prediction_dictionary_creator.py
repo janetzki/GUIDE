@@ -23,8 +23,26 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         '_evaluate',
     ]
 
+    LOADED_VARIABLES_BY_STEP = DictionaryCreator.LOADED_VARIABLES_BY_STEP | {
+        '_build_word_graph (raw)': ['word_graph'],
+        '_predict_lemmas': ['base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang'],
+        '_contract_lemmas': [],
+        '_build_word_graph (contracted)': [],
+        '_predict_translation_links': ['strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang'],
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # Saved data (graph building)
+        self.word_graph = None
+
+        # Saved data (lemmas)
+        self.base_lemma_by_wtxt_by_lang = defaultdict(dict)
+        self.lemma_group_by_base_lemma_by_lang = defaultdict(lambda: defaultdict(set))
+
+        # Saved data (predicting links)
+        self.strength_by_lang_by_wtxt_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
 
     def _find_lemma_link_candidates(self):
         # find all pairs of nodes in the word graph with a common neighbor
@@ -81,7 +99,27 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         avg_weights_sum = (sum_weights_1_to_2 + sum_weights_2_to_1) / 2
         return edge_weight / avg_weights_sum
 
-    def plot_subgraph(self, lang, text, min_count=1):
+    def _build_word_graph(self):
+        # flatmap words
+        word_nodes = [word for lang in self.words_by_text_by_lang
+                      if lang in self.target_langs  # ignore additional languages in graph
+                      for word in self.words_by_text_by_lang[lang].values()]
+
+        # get all edges for alignments between words in flat list
+        weighted_edges = set()
+        for word_1 in word_nodes:
+            for word_2, count in word_1.get_aligned_words_and_counts(self.words_by_text_by_lang):
+                if word_2.iso_language not in self.target_langs:
+                    continue
+                weighted_edges.add((word_1, word_2, count))
+
+        # create graph structures with NetworkX
+        self.word_graph = nx.Graph()
+        self.word_graph.add_nodes_from(word_nodes)
+        self.word_graph.add_weighted_edges_from(weighted_edges)
+        self.changed_variables.add('word_graph')
+
+    def _plot_subgraph(self, lang, text, min_count=1):
         filtered_word_nodes = [word for word in self.word_graph.nodes if word.iso_language in self.target_langs]
 
         filtered_weighted_edges = []
@@ -174,6 +212,30 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         plt.title(title)
 
         plt.show()
+
+    def _weighted_resource_allocation_index(self, ebunch):
+        r"""Compute the weighted resource allocation index of all node pairs in ebunch.
+
+        References
+        ----------
+        .. resource allocation... todo
+           (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
+
+           Predicting missing links via local information.
+           Eur. Phys. J. B 71 (2009) 623.
+           https://arxiv.org/pdf/0901.0553.pdf
+        """
+
+        def predict(word_1, word_2):
+            return sum((self.word_graph.get_edge_data(word_1, common_neighbor)['weight'] +
+                        self.word_graph.get_edge_data(common_neighbor, word_2)['weight'])
+                       / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
+                          self._compute_sum_of_weights(common_neighbor, word_2.iso_language))
+                       for common_neighbor in nx.common_neighbors(self.word_graph, word_1, word_2)
+                       if word_1.iso_language != common_neighbor.iso_language != word_2.iso_language)  # ignore
+            # eng-eng-eng edges
+
+        return DictionaryCreator._apply_prediction(predict, ebunch)
 
     def _predict_lemma_links(self, lemma_link_candidates):
         # preds = nx.jaccard_coefficient(self.word_graph)
@@ -306,22 +368,22 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 
     def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
-        self.execute_and_track_state(self._preprocess_data, load=load, save=save)
-        self.execute_and_track_state(self._map_words_to_qids, load=load, save=save)
+        self._execute_and_track_state(self._preprocess_data, load=load, save=save)
+        self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
 
         # build the graph with single words as nodes
-        self.execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
-                                     load=load, save=save)
+        self._execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
+                                      load=load, save=save)
 
-        self.plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
+        self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
 
-        self.execute_and_track_state(self._predict_lemmas, load=load, save=save)
-        self.execute_and_track_state(self._contract_lemmas, load=load, save=save)
+        self._execute_and_track_state(self._predict_lemmas, load=load, save=save)
+        self._execute_and_track_state(self._contract_lemmas, load=load, save=save)
 
         # build the word graph with lemma groups as nodes
-        self.execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (contracted)',
-                                     load=load, save=save)
+        self._execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (contracted)',
+                                      load=load, save=save)
 
-        self.execute_and_track_state(self._predict_translation_links, load=load, save=save)
-        self.plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
-        self.execute_and_track_state(self._evaluate, print_reciprocal_ranks=False)
+        self._execute_and_track_state(self._predict_translation_links, load=load, save=save)
+        self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
+        self._execute_and_track_state(self._evaluate, print_reciprocal_ranks=False)
