@@ -1,8 +1,8 @@
 from src.dictionary_creator.tfidf_dictionary_creator import TfidfDictionaryCreator
-from test.dictionary_creator.test_dictionary_creator import TestDictionaryCreator
+from test.dictionary_creator.test_dictionary_creator import AbstractTestDictionaryCreator
 
 
-class TestTfidfDictionaryCreator(TestDictionaryCreator):
+class TestTfidfDictionaryCreator(AbstractTestDictionaryCreator):
     def setUp(self) -> None:
         super().setUp()
         self.tested_class = TfidfDictionaryCreator
@@ -10,9 +10,9 @@ class TestTfidfDictionaryCreator(TestDictionaryCreator):
 
     def test_full_pipeline_with_loading_and_with_tfidf(self):
         self._run_full_pipeline_twice(load_1=False, save_1=True, load_2=True, save_2=False,
-                                      plot_word_lang='fra', plot_word='et', min_count=3, check_isomorphism=True)
+                                      plot_word_lang='fra', plot_word='et', min_count=3)
 
-    def test_train_tfidf_based_model(self):
+    def test__train_tfidf_based_model(self):
         self.dc.aligned_wtxts_by_qid_by_lang_by_lang = {
             'eng': {
                 'eng': {
@@ -28,7 +28,7 @@ class TestTfidfDictionaryCreator(TestDictionaryCreator):
             }
         }
 
-        self.dc.train_tfidf_based_model()
+        self.dc._train_tfidf_based_model()
 
         self.assertEqual({
             'eng': {'1.2 1': {'earth': 1.0},

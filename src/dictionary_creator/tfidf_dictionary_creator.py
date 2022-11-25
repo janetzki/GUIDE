@@ -8,22 +8,17 @@ from src.dictionary_creator.dictionary_creator import DictionaryCreator
 class TfidfDictionaryCreator(DictionaryCreator):
     STEPS = [
         'started',
-        'preprocessed data',
-        'mapped words to qids',
-        'built uncontracted word graph',
-        'predicted lemmas',
-        'contracted lemmas',
-        'built contracted word graph',
-        'predicted translation links',
-        'trained tfidf based model',
-        'evaluated',
+        '_preprocess_data',
+        '_map_words_to_qids',
+        '_train_tfidf_based_model',
+        '_evaluate',
     ]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.vectorizer = TfidfVectorizer()
 
-    def train_tfidf_based_model(self):
+    def _train_tfidf_based_model(self):
         for target_lang in self.target_langs:
             if target_lang in self.top_scores_by_qid_by_lang:
                 print(f'Skipped: top {target_lang} tfidfs already collected')
@@ -48,9 +43,7 @@ class TfidfDictionaryCreator(DictionaryCreator):
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 
     def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
-        self.execute_and_track_state(self.preprocess_data, load=load, save=save)
-        self.execute_and_track_state(self.map_words_to_qids, load=load, save=save)
-        self.execute_and_track_state(self.build_word_graph, step_name='build uncontracted word graph',
-                                     load=load, save=save)
-        self.execute_and_track_state(self.train_tfidf_based_model, load=load, save=save)
-        self.execute_and_track_state(self.evaluate, print_reciprocal_ranks=False)
+        self.execute_and_track_state(self._preprocess_data, load=load, save=save)
+        self.execute_and_track_state(self._map_words_to_qids, load=load, save=save)
+        self.execute_and_track_state(self._train_tfidf_based_model, load=load, save=save)
+        self.execute_and_track_state(self._evaluate, print_reciprocal_ranks=False)

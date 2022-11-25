@@ -11,7 +11,7 @@ def sdi_with_dictionary_lookup():
     # choose bible translations as evaluation data
     # tokenize the bible
     # dc.dc_preprocessing(save=True)
-    # dc.dc_train_tfidf_based_model(load=True, save=True)
+    # dc.dc__train_tfidf_based_model(load=True, save=True)
     dc._load_state()
 
     # lookup each token in the dictionary to indentify semantic domains

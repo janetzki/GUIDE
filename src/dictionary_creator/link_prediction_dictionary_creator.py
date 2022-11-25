@@ -14,14 +14,14 @@ from src.dictionary_creator.dictionary_creator import DictionaryCreator
 class LinkPredictionDictionaryCreator(DictionaryCreator):
     STEPS = [
         'started',
-        'preprocessed data',
-        'mapped words to qids',
-        'built uncontracted word graph',
-        'predicted lemmas',
-        'contracted lemmas',
-        'built contracted word graph',
-        'predicted translation links',
-        'evaluated',
+        '_preprocess_data',
+        '_map_words_to_qids',
+        '_build_word_graph (raw)',
+        '_predict_lemmas',
+        '_contract_lemmas',
+        '_build_word_graph (contracted)',
+        '_predict_translation_links',
+        '_evaluate',
     ]
 
     def __init__(self, *args, **kwargs):
@@ -300,7 +300,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
         self.changed_variables.add('words_by_text_by_lang')
 
-    def predict_translation_links(self):
+    def _predict_translation_links(self):
         link_candidates = self._find_translation_link_candidates()
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
@@ -323,11 +323,11 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 
     def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
-        self.execute_and_track_state(self.preprocess_data, load=load, save=save)
-        self.execute_and_track_state(self.map_words_to_qids, load=load, save=save)
+        self.execute_and_track_state(self._preprocess_data, load=load, save=save)
+        self.execute_and_track_state(self._map_words_to_qids, load=load, save=save)
 
         # build the graph with single words as nodes
-        self.execute_and_track_state(self.build_word_graph, step_name='build uncontracted word graph',
+        self.execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
                                      load=load, save=save)
 
         self.plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
@@ -336,9 +336,9 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         self.execute_and_track_state(self._contract_lemmas, load=load, save=save)
 
         # build the word graph with lemma groups as nodes
-        self.execute_and_track_state(self.build_word_graph, step_name='build contracted word graph',
+        self.execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (contracted)',
                                      load=load, save=save)
 
-        self.execute_and_track_state(self.predict_translation_links, load=load, save=save)
+        self.execute_and_track_state(self._predict_translation_links, load=load, save=save)
         self.plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
-        self.execute_and_track_state(self.evaluate, print_reciprocal_ranks=False)
+        self.execute_and_track_state(self._evaluate, print_reciprocal_ranks=False)

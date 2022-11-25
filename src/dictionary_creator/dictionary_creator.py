@@ -82,7 +82,6 @@ class DictionaryCreator(ABC):
     }
 
     def __init__(self, bids, score_threshold=0.5,
-                 base_path='.',
                  state_files_path='data/0_state',
                  aligned_bibles_path='data/1_aligned_bibles',
                  sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
@@ -93,19 +92,18 @@ class DictionaryCreator(ABC):
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
             ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
-        self.base_path = base_path
-        self.state_files_path = os.path.join(self.base_path, state_files_path)
-        self.aligned_bibles_path = os.path.join(self.base_path, aligned_bibles_path)
+        self.state_files_path = state_files_path
+        self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
         self.eng_lemmatizer = WordNetLemmatizer()
         self.state_loaded = False
         self.score_threshold = score_threshold
-        self.sd_path_prefix = os.path.join(self.base_path, sd_path_prefix)
+        self.sd_path_prefix = sd_path_prefix
         self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
         self.num_verses = 41899
 
         # Saved data (general)
-        self.progress_log = []
+        self.progress_log = ['started']
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -313,8 +311,7 @@ class DictionaryCreator(ABC):
                 print(f'Skipped: Bible {bid} already loaded')
                 continue
 
-            with open(os.path.join(self.base_path, '../load bibles in DGraph/content/scripture_public_domain',
-                                   self.bibles_by_bid[bid]),
+            with open(os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid]),
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
                 self.changed_variables.add('verses_by_bid')
@@ -382,9 +379,7 @@ class DictionaryCreator(ABC):
                 continue
 
             assert (self.tokenizer == 'bpe')
-            file = os.path.join(
-                self.base_path,
-                '../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
+            file = os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
             tokenizer.pre_tokenizer = Whitespace()  # todo: try to delete this
             trainer = BpeTrainer()
@@ -447,7 +442,7 @@ class DictionaryCreator(ABC):
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
 
                 result = subprocess.run(
-                    ['sh', os.path.join(self.base_path, 'align_bibles.sh'), bid_1, bid_2, self.tokenizer,
+                    ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer,
                      self.aligned_bibles_path],
                     capture_output=True, text=True)
                 # retrieve the final entropy and perplexity
@@ -457,11 +452,34 @@ class DictionaryCreator(ABC):
                 print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
 
     def _check_already_done(self, target_progress, load):
+        loaded_variables_by_step = {
+            'started': [],
+            '_preprocess_data': [],  # todo #12
+            '_map_words_to_qids': [],
+            '_build_word_graph (raw)': [],
+            '_predict_lemmas': [],
+            '_contract_lemmas': [],
+            '_build_word_graph (contracted)': [],
+            '_predict_translation_links': [],
+            '_train_tfidf_based_model': [],
+            '_evaluate': [],
+        }
+
         if load:
             self._load_state()
+
         # assert a consistent order of progress steps
-        for actual_step, expected_step in zip(self.progress_log, self.STEPS):
+        for expected_step, actual_step in zip(self.progress_log, self.STEPS):
             assert (actual_step == expected_step, f'Expected {expected_step}, got {actual_step}')
+
+        # assert that all variables are available that have been set until the last step
+        assert (len(self.progress_log))
+        last_step = self.progress_log[-1]
+        for loaded_variable in loaded_variables_by_step[last_step]:
+            assert (loaded_variable is not None)
+            if type(loaded_variable) == dict:
+                assert (len(loaded_variable) > 0)
+
         return target_progress in self.progress_log
 
     def _set_progress(self, progress, save):
@@ -479,7 +497,7 @@ class DictionaryCreator(ABC):
         func(*args, **kwargs)
         self._set_progress(step_name, save)
 
-    def preprocess_data(self):
+    def _preprocess_data(self):
         self._load_data()
         self._build_sds()
         self._tokenize_verses()
@@ -545,7 +563,7 @@ class DictionaryCreator(ABC):
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
                 self._add_bidirectional_edge(word_1, word_2)
 
-    def map_words_to_qids(self):
+    def _map_words_to_qids(self):
         # map words in all target language bibles to semantic domains
         for bid_1 in self.bids:
             for bid_2 in self.bids:
@@ -557,7 +575,7 @@ class DictionaryCreator(ABC):
                     alignment = alignment_file.readlines()
                     self._map_two_bibles(alignment, bid_1, bid_2)
 
-    def build_word_graph(self):
+    def _build_word_graph(self):
         # flatmap words
         word_nodes = [word for lang in self.words_by_text_by_lang
                       if lang in self.target_langs  # ignore additional languages in graph
@@ -740,7 +758,7 @@ class DictionaryCreator(ABC):
 
     def _load_test_data(self, target_lang):
         # load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation)
-        df_test = pd.read_csv(f'{self.base_path}/data/multilingual_semdom_dictionary.csv')
+        df_test = pd.read_csv('data/multilingual_semdom_dictionary.csv')
         df_test = df_test[[f'{self.source_lang}-000.txt', f'{target_lang}-000.txt']]
         df_test.columns = ['source_wtxt', 'target_wtxts']
         df_test = df_test[df_test['target_wtxts'].notna()]
@@ -799,7 +817,7 @@ class DictionaryCreator(ABC):
         print(f'MRR: {mean_reciprocal_rank:.3f}')
         return mean_reciprocal_rank
 
-    def evaluate(self, print_reciprocal_ranks=False):
+    def _evaluate(self, print_reciprocal_ranks=False):
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
         print(f'\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
         for target_lang in self.target_langs:

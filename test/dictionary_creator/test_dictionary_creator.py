@@ -1,24 +1,26 @@
 import os
 from unittest import TestCase
 
-import networkx as nx
-
 from src.dictionary_creator.dictionary_creator import DictionaryCreator
 from src.word import Word
 
 
-class TestDictionaryCreator(TestCase):
+class AbstractTestDictionaryCreator(TestCase):
     def setUp(self) -> None:
         self.tested_class = DictionaryCreator  # overwritten by child classes
         self.dc = None  # overwritten by child classes
 
+        # set the working directory to the project root
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+        os.chdir(project_root)
+
         # delete all files in test/data/0_state
-        for file in os.listdir('data/0_state'):
-            os.remove('../test/data/0_state/' + file)
+        for file in os.listdir('test/data/0_state'):
+            os.remove('test/data/0_state/' + file)
 
         # delete all files in test/data/1_aligned_bibles
-        for file in os.listdir('data/1_aligned_bibles'):
-            os.remove('../test/data/1_aligned_bibles/' + file)
+        for file in os.listdir('test/data/1_aligned_bibles'):
+            os.remove('test/data/1_aligned_bibles/' + file)
 
         DictionaryCreator.BIBLES_BY_BID.update({
             'bid-eng-DBY-1000': '../../../dictionary_creator/test/data/eng-engDBY-1000-verses.txt',
@@ -34,8 +36,8 @@ class TestDictionaryCreator(TestCase):
     def _create_dictionary_creator(self, bids=None, sd_path_prefix='test/data/semdom_qa_clean_short'):
         if bids is None:
             bids = ['bid-eng-DBY-10', 'bid-fra-fob-10']
+
         dc = self.tested_class(bids, score_threshold=0.2,
-                               base_path='..',
                                state_files_path='test/data/0_state',
                                aligned_bibles_path='test/data/1_aligned_bibles',
                                sd_path_prefix=sd_path_prefix)
@@ -48,22 +50,8 @@ class TestDictionaryCreator(TestCase):
             self.dc.words_by_text_by_lang[lang][text] = word
         return word
 
-    def _check_if_edge_weights_doubled(self):
-        # check if there are only even edge weights because the edge weights doubled
-        edge_weights = nx.get_edge_attributes(self.dc.word_graph, 'weight')
-        for weight in edge_weights.values():
-            if weight % 2 != 0:
-                return False
-        return True
-
-    def _run_full_pipeline(self, dc, load, save, plot_word_lang='eng', plot_word='drink', min_count=1):
-        dc.create_dictionary(save=save, load=load, plot_word_lang=plot_word_lang, plot_wtxt=plot_word,
-                             min_count=min_count)
-        self.assertFalse(self._check_if_edge_weights_doubled())
-        # If this happens, there is a bug that needs to be fixed. It might be related to loading incomplete data.
-
     def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
-                                 min_count=1, sd_path_prefix=None, check_isomorphism=False):
+                                 min_count=1, sd_path_prefix=None):
         dc_new = self._create_dictionary_creator()
 
         if sd_path_prefix is not None:
@@ -71,11 +59,11 @@ class TestDictionaryCreator(TestCase):
             dc_new.sd_path_prefix = sd_path_prefix
 
         print('STARTING PIPELINE RUN 1/2')
-        self._run_full_pipeline(self.dc, load=load_1, save=save_1, plot_word_lang=plot_word_lang, plot_word=plot_word,
-                                min_count=min_count)
+        self.dc.create_dictionary(save=save_1, load=load_1, plot_word_lang=plot_word_lang, plot_wtxt=plot_word,
+                                  min_count=min_count)
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        self._run_full_pipeline(dc_new, load=load_2, save=save_2, plot_word_lang=plot_word_lang, plot_word=plot_word,
-                                min_count=min_count)
+        dc_new.create_dictionary(save=save_2, load=load_2, plot_word_lang=plot_word_lang, plot_wtxt=plot_word,
+                                 min_count=min_count)
 
         self.assertEqual(self.dc.progress_log, dc_new.progress_log)
         self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())
@@ -93,18 +81,16 @@ class TestDictionaryCreator(TestCase):
         self.assertDictEqual(self.dc.question_by_qid_by_lang, dc_new.question_by_qid_by_lang)
         self.assertDictEqual(self.dc.wtxts_by_verse_by_bid, dc_new.wtxts_by_verse_by_bid)
         self.assertDictEqual(self.dc.aligned_wtxts_by_qid_by_lang_by_lang, dc_new.aligned_wtxts_by_qid_by_lang_by_lang)
-        if check_isomorphism:
-            self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph,
-                                             edge_match=lambda x, y: x['weight'] == y['weight']))
         self.assertDictEqual(self.dc.base_lemma_by_wtxt_by_lang, dc_new.base_lemma_by_wtxt_by_lang)
         self.assertDictEqual(self.dc.lemma_group_by_base_lemma_by_lang, dc_new.lemma_group_by_base_lemma_by_lang)
         self.assertEqual(sorted(self.dc.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)),
                          sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self.assertDictEqual(self.dc.top_scores_by_qid_by_lang, dc_new.top_scores_by_qid_by_lang)
         self.assertDictEqual(self.dc.evaluation_results_by_lang, dc_new.evaluation_results_by_lang)
+        return dc_new
 
 
-class TestDictionaryCreatorFast(TestDictionaryCreator):
+class TestDictionaryCreator(AbstractTestDictionaryCreator):
     def test__convert_bid_to_lang(self):
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-eng-DBY'), 'eng')
         self.assertEqual(DictionaryCreator._convert_bid_to_lang('bid-fra-fob'), 'fra')
