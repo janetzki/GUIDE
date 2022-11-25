@@ -13,7 +13,6 @@ from src.dictionary_creator.dictionary_creator import DictionaryCreator
 
 class LinkPredictionDictionaryCreator(DictionaryCreator):
     STEPS = [
-        'started',
         '_preprocess_data',
         '_map_words_to_qids',
         '_build_word_graph (raw)',
@@ -181,7 +180,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         # preds = nx.adamic_adar_index(self.word_graph)
         preds = self._weighted_resource_allocation_index(lemma_link_candidates)
         for word_1, word_2, link_score in tqdm(preds, desc='Predicting lemma links', total=len(lemma_link_candidates)):
-            assert (word_1.iso_language == word_2.iso_language)
+            assert word_1.iso_language == word_2.iso_language
             lang = word_1.iso_language
             wtxt_1 = word_1.text
             wtxt_2 = word_2.text
@@ -242,13 +241,13 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         for lang in self.lemma_group_by_base_lemma_by_lang:
             for base_lemma, lemma_group in self.lemma_group_by_base_lemma_by_lang[lang].items():
                 # check that all lemma groups contain at least the base lemma and another lemma
-                assert (base_lemma in lemma_group)
-                assert (len(lemma_group) > 1)
+                assert base_lemma in lemma_group
+                assert len(lemma_group) > 1
 
                 # check that all lemmas point to the base lemma and that all non-base lemmas store no lemma group
                 for lemma in lemma_group:
-                    assert (self.base_lemma_by_wtxt_by_lang[lang][lemma] == base_lemma)
-                    assert (lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang])
+                    assert self.base_lemma_by_wtxt_by_lang[lang][lemma] == base_lemma
+                    assert lemma == base_lemma or lemma not in self.lemma_group_by_base_lemma_by_lang[lang]
 
         for lang in self.target_langs:
             # if we found no lemmas for a language,
@@ -284,7 +283,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             for base_lemma_wtxt, lemma_wtxt_group in tqdm(self.lemma_group_by_base_lemma_by_lang[lang].items(),
                                                           desc=f'Contracting lemmas for {lang}',
                                                           total=len(self.lemma_group_by_base_lemma_by_lang[lang])):
-                assert (len(lemma_wtxt_group) > 1)
+                assert len(lemma_wtxt_group) > 1
 
                 # collect words that belong to the same lemma group
                 # by finding the corresponding words for each lemma text

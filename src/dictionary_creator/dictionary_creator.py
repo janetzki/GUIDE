@@ -25,9 +25,6 @@ from src.word import Word
 class DictionaryCreator(ABC):
     STEPS = None  # Implemented by child classes
     BIBLES_BY_BID = {
-        'bid-eng-DBY-1000': '../../../dictionary_creator/test/data/eng-engDBY-1000-verses.txt',
-        'bid-fra-fob-1000': '../../../dictionary_creator/test/data/fra-fra_fob-1000-verses.txt',
-
         'bid-eng-asvbt': 'eng-engasvbt.txt',
         'bid-eng-asv': 'eng-eng-asv.txt',
         'bid-eng-BBE': 'eng-engBBE.txt',
@@ -103,7 +100,7 @@ class DictionaryCreator(ABC):
         self.num_verses = 41899
 
         # Saved data (general)
-        self.progress_log = ['started']
+        self.progress_log = []
 
         # Saved data (preprocessing)
         self.sds_by_lang = {}
@@ -230,7 +227,7 @@ class DictionaryCreator(ABC):
             most_recent_timestamp = timestamps[-1]
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
-            assert (most_recent_timestamp < str(self.start_timestamp))
+            assert most_recent_timestamp < str(self.start_timestamp)
 
         return [file_name for file_name in file_names if file_name.startswith(most_recent_timestamp)]
 
@@ -270,12 +267,12 @@ class DictionaryCreator(ABC):
             if type(variable) is dict or type(variable) is defaultdict:
                 for file_path in file_paths:
                     key = file_path.split('_')[-1].split('.')[0]
-                    assert (key not in ('lang', 'bid'))
+                    assert key not in ('lang', 'bid')
                     if key in self.target_langs or key in self.bids:
                         variable[key] = load_file(None, file_path)
             else:
                 if len(file_paths):
-                    assert (len(file_paths) == 1)
+                    assert len(file_paths) == 1
                     setattr(self, variable_name, load_file(variable, file_paths[0]))
 
         # self.top_scores_by_qid_by_lang = defaultdict(dict)  # activate this to switch between
@@ -315,7 +312,7 @@ class DictionaryCreator(ABC):
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
                 self.changed_variables.add('verses_by_bid')
-            assert (len(self.verses_by_bid[bid]) == self.num_verses)
+            assert len(self.verses_by_bid[bid]) == self.num_verses
 
     def _build_sds(self):
         # convert sd dataframe to dictionary
@@ -378,7 +375,7 @@ class DictionaryCreator(ABC):
                 print(f'Skipped: Bible {bid} already tokenized')
                 continue
 
-            assert (self.tokenizer == 'bpe')
+            assert self.tokenizer == 'bpe'
             file = os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
             tokenizer.pre_tokenizer = Whitespace()  # todo: try to delete this
@@ -453,16 +450,16 @@ class DictionaryCreator(ABC):
 
     def _check_already_done(self, target_progress, load):
         loaded_variables_by_step = {
-            'started': [],
-            '_preprocess_data': [],  # todo #12
-            '_map_words_to_qids': [],
-            '_build_word_graph (raw)': [],
-            '_predict_lemmas': [],
+            '_preprocess_data': [self.sds_by_lang, self.verses_by_bid, self.words_by_text_by_lang,
+                                 self.question_by_qid_by_lang, self.wtxts_by_verse_by_bid],
+            '_map_words_to_qids': [self.aligned_wtxts_by_qid_by_lang_by_lang],
+            '_build_word_graph (raw)': [self.word_graph],
+            '_predict_lemmas': [self.base_lemma_by_wtxt_by_lang, self.lemma_group_by_base_lemma_by_lang],
             '_contract_lemmas': [],
             '_build_word_graph (contracted)': [],
-            '_predict_translation_links': [],
-            '_train_tfidf_based_model': [],
-            '_evaluate': [],
+            '_predict_translation_links': [self.strength_by_lang_by_wtxt_by_lang, self.top_scores_by_qid_by_lang],
+            '_train_tfidf_based_model': [self.top_scores_by_qid_by_lang],
+            '_evaluate': [self.evaluation_results_by_lang],
         }
 
         if load:
@@ -470,15 +467,16 @@ class DictionaryCreator(ABC):
 
         # assert a consistent order of progress steps
         for expected_step, actual_step in zip(self.progress_log, self.STEPS):
-            assert (actual_step == expected_step, f'Expected {expected_step}, got {actual_step}')
+            assert actual_step == expected_step
 
-        # assert that all variables are available that have been set until the last step
-        assert (len(self.progress_log))
-        last_step = self.progress_log[-1]
-        for loaded_variable in loaded_variables_by_step[last_step]:
-            assert (loaded_variable is not None)
-            if type(loaded_variable) == dict:
-                assert (len(loaded_variable) > 0)
+        # assert that all required variables are available
+        for step in self.STEPS:
+            if step == target_progress:
+                break
+            for loaded_variable in loaded_variables_by_step[step]:
+                assert loaded_variable is not None
+                if type(loaded_variable) in (dict, list, set, defaultdict):
+                    assert len(loaded_variable) > 0
 
         return target_progress in self.progress_log
 
@@ -542,7 +540,7 @@ class DictionaryCreator(ABC):
 
         if lang_1 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2] \
                 or lang_2 in self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1]:
-            print(f'Skipped: {bid_1} and {bid_2} already mapped')  # todo: remove these skipped messages
+            print(f'Skipped: {bid_1} and {bid_2} already mapped')  # todo #12 remove these skipped messages
             return
 
         for alignment_line, wtxts_1, wtxts_2 in tqdm(

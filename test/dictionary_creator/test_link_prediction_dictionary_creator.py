@@ -16,10 +16,11 @@ class TestLinkPredictionDictionaryCreator(AbstractTestDictionaryCreator):
                 return False
         return True
 
-    def _run_full_pipeline_twice(self, *args, **kwargs):
+    def _run_full_pipeline_twice(self, check_isomorphism=True, *args, **kwargs):
         dc_new = super()._run_full_pipeline_twice(*args, **kwargs)
-        self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph,
-                                         edge_match=lambda x, y: x['weight'] == y['weight']))
+        if check_isomorphism:
+            self.assertTrue(nx.is_isomorphic(self.dc.word_graph, dc_new.word_graph,
+                                             edge_match=lambda x, y: x['weight'] == y['weight']))
         self._check_if_edge_weights_doubled(self.dc)
         self._check_if_edge_weights_doubled(dc_new)
         return dc_new
@@ -644,12 +645,28 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     def test_inconsistent_state_loaded(self):
         # only word_graph has been loaded
+        self.dc.progress_log = [
+            '_preprocess_data',
+            '_map_words_to_qids',
+            '_build_word_graph (raw)',
+        ]
+        self.dc.word_graph = nx.Graph()
+        self.dc.execute_and_track_state(self.dc._preprocess_data, load=False, save=True)
         with self.assertRaises(AssertionError):
-            self.fail()  # todo #12
+            self.dc.execute_and_track_state(self.dc._map_words_to_qids, load=False, save=True)
+
+    def test_inconsistent_step_order(self):
+        # the step '_map_words_to_qids' is missing
+        self.dc.progress_log = [
+            '_preprocess_data',
+            '_build_word_graph (raw)',
+        ]
+        self.dc.word_graph = nx.Graph()
+        with self.assertRaises(AssertionError):
+            self.dc.execute_and_track_state(self.dc._preprocess_data, load=False, save=True)
 
 
 class TestLinkPredictionDictionaryCreatorSlow(TestLinkPredictionDictionaryCreator):
     # This class is for slower test cases.
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
-        self._run_full_pipeline_twice(load_1=False, save_1=False, load_2=False, save_2=False,
-                                      sd_path_prefix='../../semdom extractor/output/semdom_qa_clean')
+        self._run_full_pipeline_twice(check_isomorphism=False, load_1=False, save_1=False, load_2=False, save_2=False)

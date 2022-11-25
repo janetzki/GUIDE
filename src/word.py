@@ -5,7 +5,7 @@ class Word(object):
     def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
         self.text = text
         self.iso_language = lang
-        assert (qids is None or type(qids) == set)
+        assert qids is None or type(qids) == set
         self.qids = set() if qids is None else qids
         self.occurrences_in_bible = occurrences_in_bible
         self.display_text = text

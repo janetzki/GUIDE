@@ -7,7 +7,6 @@ from src.dictionary_creator.dictionary_creator import DictionaryCreator
 
 class TfidfDictionaryCreator(DictionaryCreator):
     STEPS = [
-        'started',
         '_preprocess_data',
         '_map_words_to_qids',
         '_train_tfidf_based_model',
@@ -26,7 +25,7 @@ class TfidfDictionaryCreator(DictionaryCreator):
 
             aligned_wtxts_by_qid = self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][self.source_lang]
             tfidfs = self.vectorizer.fit_transform(list(aligned_wtxts_by_qid.values()))
-            assert (tfidfs.shape[0] == len(aligned_wtxts_by_qid))
+            assert tfidfs.shape[0] == len(aligned_wtxts_by_qid)
             for idx, tfidf in tqdm(enumerate(tfidfs),
                                    desc=f'Collecting top {target_lang} tf-idf scores',
                                    total=tfidfs.shape[0]):
