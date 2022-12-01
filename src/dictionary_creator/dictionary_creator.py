@@ -464,31 +464,22 @@ class DictionaryCreator(ABC):
         word_2.add_aligned_word(word_1, count)
         self.changed_variables.add('words_by_text_by_lang')
 
-    def _map_word_to_qid(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score=None,
-                         score_by_wtxt_by_qid_by_lang=None):
-        # map a target word to a qid by looking at the qids of the aligned source word
+    def _map_word_to_qids(self, source_wtxt, target_wtxt, source_lang, target_lang):
+        """
+        Assign a target word to all of a source word's qids.
+        """
         for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
-            if link_score is None:
-                # map word for tf-idf based model # todo #12: refactor this
-                self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
-                self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
-            else:
-                # map word for link prediction based model
-                score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
-                if target_wtxt in score_by_wtxt:
-                    score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt], link_score)
-                    # todo: find mathematically more elegant solution than using just the highest link score
-                    #  (something like 0.7 and 0.3 --> 0.9)
-                else:
-                    score_by_wtxt[target_wtxt] = link_score
+            self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
+            self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
 
-    def _map_word_to_qid_bidirectionally(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score=None,
-                                         score_by_wtxt_by_qid_by_lang=None):
-        self._map_word_to_qid(wtxt_1, wtxt_2, lang_1, lang_2, link_score, score_by_wtxt_by_qid_by_lang)
+    def _map_word_to_qid_bidirectionally(self, wtxt_1, wtxt_2, lang_1, lang_2):
+        """
+        Assign two words to all of each other's qids.
+        """
+        self._map_word_to_qids(wtxt_1, wtxt_2, lang_1, lang_2)
         if lang_1 == lang_2 and wtxt_1 == wtxt_2:
-            # only map word once onto itself (loop edge)
             return
-        self._map_word_to_qid(wtxt_2, wtxt_1, lang_2, lang_1, link_score, score_by_wtxt_by_qid_by_lang)
+        self._map_word_to_qids(wtxt_2, wtxt_1, lang_2, lang_1)
 
     def _map_two_bibles_bidirectionally(self, alignment, bid_1, bid_2):
         # map words in two bibles to semantic domains

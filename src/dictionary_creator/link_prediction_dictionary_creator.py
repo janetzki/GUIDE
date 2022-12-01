@@ -345,14 +345,38 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
         self.changed_variables.add('words_by_text_by_lang')
 
+    def _map_word_to_qids_with_score(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score,
+                                     score_by_wtxt_by_qid_by_lang):
+        """
+        Assign a target word to all of a source word's qids. A score indicates the assignment's strength.
+        """
+        for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
+            score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
+            if target_wtxt in score_by_wtxt:
+                score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt], link_score)
+                # todo: find mathematically more elegant solution than using just the highest link score
+                #  (something like 0.7 and 0.3 --> 0.9)
+            else:
+                score_by_wtxt[target_wtxt] = link_score
+
+    def _map_word_to_qid_bidirectionally_with_score(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score,
+                                                    score_by_wtxt_by_qid_by_lang):
+        """
+        Assign two words to all of each other's qids. A score indicates the assignment's strength.
+        """
+        assert lang_1 != lang_2
+        self._map_word_to_qids_with_score(wtxt_1, wtxt_2, lang_1, lang_2, link_score, score_by_wtxt_by_qid_by_lang)
+        self._map_word_to_qids_with_score(wtxt_2, wtxt_1, lang_2, lang_1, link_score, score_by_wtxt_by_qid_by_lang)
+
     def _predict_translation_links(self):
         link_candidates = self._find_translation_link_candidates()
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
         for word_1, word_2 in tqdm(link_candidates, desc='Predicting links', total=len(link_candidates)):
             link_score = self._compute_link_score(word_1, word_2)
-            self._map_word_to_qid_bidirectionally(word_1.text, word_2.text, word_1.iso_language, word_2.iso_language,
-                                                  link_score, score_by_wtxt_by_qid_by_lang)
+            self._map_word_to_qid_bidirectionally_with_score(word_1.text, word_2.text,
+                                                             word_1.iso_language, word_2.iso_language,
+                                                             link_score, score_by_wtxt_by_qid_by_lang)
 
         for target_lang in self.target_langs:
 

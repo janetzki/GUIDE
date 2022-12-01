@@ -36,7 +36,7 @@ class Word(object):
             yield word, count
 
     def add_aligned_word(self, word, count=1):
-        # caution: this is not symmetric, todo: make this symmetric
+        # caution: this is not symmetric, todo ~#3: make this symmetric
         self._aligned_words[str(word)] += count
 
     def remove_alignment(self, word):
