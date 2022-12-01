@@ -11,7 +11,7 @@ def sdi_with_dictionary_lookup():
     # choose bible translations as evaluation data
     # tokenize the bible
     # dc.dc_preprocessing(save=True)
-    # dc.dc_train_tfidf_based_model(load=True, save=True)
+    # dc.dc__train_tfidf_based_model(load=True, save=True)
     dc._load_state()
 
     # lookup each token in the dictionary to indentify semantic domains
@@ -24,7 +24,7 @@ def sdi_with_dictionary_lookup():
                 scored_qids.append((normalized_word, qid, question, tfidf))
     pp.pprint(scored_qids)
 
-    # TODO: evaluate identified semantic domains with verse-semdom mappings from human labeler
+    # todo ~#1: evaluate identified semantic domains with verse-semdom mappings from human labeler
 
 
 def sdi_with_word_clustering():

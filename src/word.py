@@ -5,7 +5,7 @@ class Word(object):
     def __init__(self, text, lang, qids=None, occurrences_in_bible=0):
         self.text = text
         self.iso_language = lang
-        assert (qids is None or type(qids) == set)
+        assert qids is None or type(qids) == set
         self.qids = set() if qids is None else qids
         self.occurrences_in_bible = occurrences_in_bible
         self.display_text = text
@@ -36,7 +36,7 @@ class Word(object):
             yield word, count
 
     def add_aligned_word(self, word, count=1):
-        # caution: this is not symmetric, todo: make this symmetric
+        # caution: this is not symmetric, todo ~#3: make this symmetric
         self._aligned_words[str(word)] += count
 
     def remove_alignment(self, word):
@@ -52,13 +52,13 @@ class Word(object):
         del words_by_text_by_lang[lang][removed_word.text]
 
     def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_wtxt_by_lang, changed_variables):
-        # todo: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
+        # todo ~#3: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
         self.display_text = f'{self.text.upper()} ({len(words) + 1})'
         print(self.display_text)
         for word in words:
             print(word)
             self.qids.update(
-                word.qids)  # todo: weight qids by occurrences in Bible when adding semdoms as nodes to graph
+                word.qids)  # todo ~#3: weight qids by occurrences in Bible when adding semdoms as nodes to graph
             self.occurrences_in_bible += word.occurrences_in_bible
             self._aligned_words += word._aligned_words
             self._update_aligned_words(word.iso_language, word, words_by_text_by_lang)
