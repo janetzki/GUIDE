@@ -51,7 +51,7 @@ class Word(object):
             aligned_word.add_aligned_word(self, count)
         del words_by_text_by_lang[lang][removed_word.text]
 
-    def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_wtxt_by_lang, changed_variables):
+    def merge_words(self, words, words_by_text_by_lang, strength_by_lang_by_wtxt_by_lang):
         # todo ~#3: refactor this method by creating a new node instead of modifying an existing one --> call _update_aligned_words only once
         self.display_text = f'{self.text.upper()} ({len(words) + 1})'
         print(self.display_text)
@@ -66,5 +66,3 @@ class Word(object):
         print('\n')
         self._update_aligned_words(self.iso_language, self, words_by_text_by_lang)
         strength_by_lang_by_wtxt_by_lang[self.iso_language].pop(self.text, None)  # remove cache entry
-        changed_variables.add('words_by_text_by_lang')
-        changed_variables.add('strength_by_lang_by_wtxt_by_lang')

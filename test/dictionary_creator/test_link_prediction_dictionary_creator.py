@@ -45,7 +45,6 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc.evaluation_results_by_lang = {
             'eng': {'precision': 0.5}
         }
-        self.dc.changed_variables.add('evaluation_results_by_lang')
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['eng']
 
@@ -54,7 +53,6 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc.evaluation_results_by_lang = {
             'fra': {'precision': 0.3}
         }
-        self.dc.changed_variables.add('evaluation_results_by_lang')
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['fra']
 

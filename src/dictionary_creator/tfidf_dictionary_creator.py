@@ -40,7 +40,6 @@ class TfidfDictionaryCreator(DictionaryCreator):
                                   zip(df.index, df['TF-IDF'])}
 
                 self.top_scores_by_qid_by_lang[target_lang][qid] = scores_by_wtxt
-                self.changed_variables.add('top_scores_by_qid_by_lang')
 
     def create_dictionary(self, load=False, save=False):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)

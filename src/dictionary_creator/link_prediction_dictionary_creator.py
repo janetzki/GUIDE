@@ -34,6 +34,9 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.saved_variables.update({'word_graph', 'base_lemma_by_wtxt_by_lang', 'lemma_group_by_base_lemma_by_lang',
+                                     'strength_by_lang_by_wtxt_by_lang', 'top_scores_by_qid_by_lang'})
+
         # Saved data (graph building)
         self.word_graph = None
 
@@ -86,7 +89,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.word_graph.get_edge_data(word_1, w)['weight']
                 for w in self.word_graph.neighbors(word_1)
                 if w.iso_language == lang_2)
-            self.changed_variables.add('strength_by_lang_by_wtxt_by_lang')
         return self.strength_by_lang_by_wtxt_by_lang[word_1.iso_language][word_1.text][lang_2]
 
     def _compute_link_score(self, word_1, word_2):
@@ -117,7 +119,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         self.word_graph = nx.Graph()
         self.word_graph.add_nodes_from(word_nodes)
         self.word_graph.add_weighted_edges_from(weighted_edges)
-        self.changed_variables.add('word_graph')
 
     def _plot_subgraph(self, lang, text, min_count=1):
         filtered_word_nodes = [word for word in self.word_graph.nodes if word.iso_language in self.target_langs]
@@ -313,9 +314,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             if lang not in self.lemma_group_by_base_lemma_by_lang:
                 self.lemma_group_by_base_lemma_by_lang[lang] = defaultdict(set)
 
-        self.changed_variables.add('base_lemma_by_wtxt_by_lang')
-        self.changed_variables.add('lemma_group_by_base_lemma_by_lang')
-
     def _contract_lemmas(self):
         # merge lemmas in same lemma groups together into a single node
         assert (len(self.base_lemma_by_wtxt_by_lang) == len(self.target_langs) and
@@ -341,9 +339,8 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
                 # contract words in the graph (i.e., merge all grouped lemma nodes into a single lemma group node)
                 base_lemma_word.merge_words(lemma_group_words, self.words_by_text_by_lang,
-                                            self.strength_by_lang_by_wtxt_by_lang, self.changed_variables)
+                                            self.strength_by_lang_by_wtxt_by_lang)
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
-        self.changed_variables.add('words_by_text_by_lang')
 
     def print_lemma_groups(self):
         for lang in self.lemma_group_by_base_lemma_by_lang:
@@ -397,7 +394,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                                            total=len(score_by_wtxt_by_qid)):
                 score_by_wtxt = dict(sorted(score_by_wtxt.items(), key=lambda x: x[1][0], reverse=True))
                 self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
-                self.changed_variables.add('top_scores_by_qid_by_lang')
 
     def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
