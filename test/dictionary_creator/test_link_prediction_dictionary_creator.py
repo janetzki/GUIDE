@@ -39,13 +39,12 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     def test_full_pipeline_with_loading_and_with_link_prediction(self):
         self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
-                                      plot_word_lang='fra', plot_word='et', min_count=2)
+                                      plot_word_lang='fra', plot_wtxt='et', min_count=2)
 
     def test_load_only_most_current_file(self):
         self.dc.evaluation_results_by_lang = {
             'eng': {'precision': 0.5}
         }
-        self.dc.changed_variables.add('evaluation_results_by_lang')
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['eng']
 
@@ -54,7 +53,6 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc.evaluation_results_by_lang = {
             'fra': {'precision': 0.3}
         }
-        self.dc.changed_variables.add('evaluation_results_by_lang')
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['fra']
 
@@ -491,29 +489,29 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
             'eng': {},
             'deu': {
                 '2 Person 1': {
-                    'mensch': 0.8,
-                    'menschen': 0.7692307692307693
+                    'mensch': (0.8, 'human being'),
+                    'menschen': (0.7692307692307693, 'human beings'),
                 },
                 '3.4 Emotion 4': {
-                    'vorbeigehend': 0.8
+                    'vorbeigehend': (0.8, 'passing')
                 },
                 '3.6.7 Test 2': {
-                    'menschen': 0.05405405405405406,
-                    'vorbeigegangen': 0.2777777777777778,
-                    'vorbeigehen': 0.6451612903225806,
-                    'vorbeigehend': 0.8
+                    'menschen': (0.05405405405405406, 'pass'),
+                    'vorbeigegangen': (0.2777777777777778, 'pass'),
+                    'vorbeigehen': (0.6451612903225806, 'pass'),
+                    'vorbeigehend': (0.8, 'passing'),
                 },
                 '4.2.6.2.1 Football, soccer 9': {
-                    'menschen': 0.05405405405405406,
-                    'vorbeigegangen': 0.2777777777777778,
-                    'vorbeigehen': 0.6451612903225806,
-                    'vorbeigehend': 0.2777777777777778
+                    'menschen': (0.05405405405405406, 'pass'),
+                    'vorbeigegangen': (0.2777777777777778, 'pass'),
+                    'vorbeigehen': (0.6451612903225806, 'pass'),
+                    'vorbeigehend': (0.2777777777777778, 'pass'),
                 },
                 '4.7.2 Pass laws 1': {
-                    'menschen': 0.05405405405405406,
-                    'vorbeigegangen': 0.2777777777777778,
-                    'vorbeigehen': 0.6451612903225806,
-                    'vorbeigehend': 0.2777777777777778
+                    'menschen': (0.05405405405405406, 'pass'),
+                    'vorbeigegangen': (0.2777777777777778, 'pass'),
+                    'vorbeigehen': (0.6451612903225806, 'pass'),
+                    'vorbeigehend': (0.2777777777777778, 'pass'),
                 }}
         }, dict(self.dc.top_scores_by_qid_by_lang))
 
@@ -570,39 +568,39 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
             'eng': {},
             'deu': {
                 '1.2.3 Solid, liquid, gas 2': {
-                    'wasser': 0.8333333333333334,
-                    'die': 0.15384615384615385,
+                    'wasser': (0.8333333333333334, 'water'),
+                    'die': (0.15384615384615385, 'water'),
                 },
                 '5.2.2.7 Drink 1': {
-                    'trinken': 0.8333333333333334,
-                    'die': 0.15384615384615385,
+                    'trinken': (0.8333333333333334, 'drink'),
+                    'die': (0.15384615384615385, 'drink'),
                 },
                 '5.2.3.6 Beverage 1': {
-                    'trinken': 0.8333333333333334,
-                    'die': 0.15384615384615385,
+                    'trinken': (0.8333333333333334, 'drink'),
+                    'die': (0.15384615384615385, 'drink'),
                 },
                 '9.2.3.5 Demonstrative pronouns 1': {
-                    'die': 0.7142857142857143,
-                    'trinken': 0.15384615384615385,
-                    'wasser': 0.15384615384615385
+                    'die': (0.7142857142857143, 'the'),
+                    'trinken': (0.15384615384615385, 'the'),
+                    'wasser': (0.15384615384615385, 'the'),
                 }},
             'fra': {
                 '1.2.3 Solid, liquid, gas 2': {
-                    'eau': 0.8333333333333334,
-                    'les': 0.15384615384615385,
+                    'eau': (0.8333333333333334, 'water'),
+                    'les': (0.15384615384615385, 'water'),
                 },
                 '5.2.2.7 Drink 1': {
-                    'boire': 0.8333333333333334,
-                    'les': 0.15384615384615385,
+                    'boire': (0.8333333333333334, 'drink'),
+                    'les': (0.15384615384615385, 'drink'),
                 },
                 '5.2.3.6 Beverage 1': {
-                    'boire': 0.8333333333333334,
-                    'les': 0.15384615384615385,
+                    'boire': (0.8333333333333334, 'drink'),
+                    'les': (0.15384615384615385, 'drink'),
                 },
                 '9.2.3.5 Demonstrative pronouns 1': {
-                    'les': 0.7142857142857143,
-                    'boire': 0.15384615384615385,
-                    'eau': 0.15384615384615385,
+                    'les': (0.7142857142857143, 'the'),
+                    'boire': (0.15384615384615385, 'the'),
+                    'eau': (0.15384615384615385, 'the'),
                 }}
         }, dict(self.dc.top_scores_by_qid_by_lang))
 

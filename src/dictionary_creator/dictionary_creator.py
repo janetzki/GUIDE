@@ -106,6 +106,10 @@ class DictionaryCreator(ABC):
         self.sd_path_prefix = sd_path_prefix
         self.start_timestamp = str(time.time_ns() // 1000)  # current time in microseconds
         self.num_verses = 41899
+        self.saved_variables = {'progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
+                                'question_by_qid_by_lang', 'wtxts_by_verse_by_bid',
+                                'aligned_wtxts_by_qid_by_lang_by_lang', 'top_scores_by_qid_by_lang',
+                                'evaluation_results_by_lang'}
 
         # Saved data (general)
         self.progress_log = []  # all completed steps
@@ -125,9 +129,6 @@ class DictionaryCreator(ABC):
 
         # Saved data (evaluation)
         self.evaluation_results_by_lang = defaultdict(dict)
-
-        # Stores which variables have changed since they have last been saved to a file
-        self.changed_variables = set()
 
     @staticmethod
     def _convert_bid_to_lang(bid):
@@ -155,8 +156,6 @@ class DictionaryCreator(ABC):
         return ((u, v, func(u, v)) for u, v in ebunch)
 
     def _save_state(self):
-        if len(self.changed_variables) == 0:
-            return
         print('\nSaving state...')
 
         # create directory if it doesn't exist
@@ -164,10 +163,7 @@ class DictionaryCreator(ABC):
         if not os.path.exists(state_files_directory):
             os.makedirs(state_files_directory)
 
-        # save newly changed class variables to a separate dill file to speed up saving
-        for variable_name in tqdm(self.changed_variables,
-                                  desc='- Saving class variables',
-                                  total=len(self.changed_variables)):
+        for variable_name in self.saved_variables:
             variable = getattr(self, variable_name)
 
             def save_file(variable_key=''):
@@ -192,7 +188,6 @@ class DictionaryCreator(ABC):
             else:
                 save_file()
 
-        self.changed_variables.clear()
         print('State saved.\n')
         sys.stdout.flush()
 
@@ -206,7 +201,7 @@ class DictionaryCreator(ABC):
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
             assert most_recent_timestamp < str(self.start_timestamp)
-
+            self.start_timestamp = most_recent_timestamp
         return most_recent_timestamp
 
     def _load_state(self):
@@ -280,14 +275,12 @@ class DictionaryCreator(ABC):
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
                 if lang not in ('deu', 'rus', 'vie', 'tpi'):
                     raise FileNotFoundError(f'Unable to load {sd_path}')
-            self.changed_variables.add('sds_by_lang')
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
             # load bible verses
             with open(os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid]),
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
-                self.changed_variables.add('verses_by_bid')
             assert len(self.verses_by_bid[bid]) == self.num_verses
 
     def _build_sds(self):
@@ -312,10 +305,8 @@ class DictionaryCreator(ABC):
                         self.words_by_text_by_lang[lang][word.text] = word
                     else:
                         self.words_by_text_by_lang[lang][word.text].qids.add(qid)
-                    self.changed_variables.add('words_by_text_by_lang')
 
                 self.question_by_qid_by_lang[lang][qid] = question
-                self.changed_variables.add('question_by_qid_by_lang')
 
     def _lemmatize_english_verse(self, verse):
         # https://stackoverflow.com/a/57686805/8816968
@@ -367,7 +358,6 @@ class DictionaryCreator(ABC):
                 wtxts_by_verse = [self._lemmatize_english_verse(verse) for verse in wtxts_by_verse]
 
             self.wtxts_by_verse_by_bid[bid] = wtxts_by_verse.copy()
-            self.changed_variables.add('wtxts_by_verse_by_bid')
 
             # mark words as appearing in the bible
             wtxts = [wtxt for wtxts in wtxts_by_verse for wtxt in wtxts]
@@ -376,7 +366,6 @@ class DictionaryCreator(ABC):
                     self.words_by_text_by_lang[lang][wtxt].occurrences_in_bible += 1
                 else:
                     self.words_by_text_by_lang[lang][wtxt] = Word(wtxt, lang, set(), 1)
-                self.changed_variables.add('words_by_text_by_lang')
 
     def _combine_alignments(self):
         # combine verses from two different bibles into a single file for wtxt aligner (fast_align)
@@ -432,7 +421,7 @@ class DictionaryCreator(ABC):
                 loaded_variable = getattr(self, loaded_variable_name)
                 assert loaded_variable is not None
                 if type(loaded_variable) in (dict, list, set, defaultdict):
-                    assert len(loaded_variable) > 0
+                    assert len(loaded_variable) > 0, f'Loaded variable {loaded_variable_name} is empty'
                 if loaded_variable_name.endswith('by_lang'):
                     assert len(loaded_variable) == len(self.target_langs)
 
@@ -440,7 +429,6 @@ class DictionaryCreator(ABC):
 
     def _set_progress(self, progress, save):
         self.progress_log.append(progress)
-        self.changed_variables.add('progress_log')
         if save:
             self._save_state()
 
@@ -462,7 +450,6 @@ class DictionaryCreator(ABC):
     def _add_bidirectional_edge(self, word_1, word_2, count=1):
         word_1.add_aligned_word(word_2, count)
         word_2.add_aligned_word(word_1, count)
-        self.changed_variables.add('words_by_text_by_lang')
 
     def _map_word_to_qids(self, source_wtxt, target_wtxt, source_lang, target_lang):
         """
@@ -470,7 +457,6 @@ class DictionaryCreator(ABC):
         """
         for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
             self.aligned_wtxts_by_qid_by_lang_by_lang[target_lang][source_lang][new_qid] += ', ' + target_wtxt
-            self.changed_variables.add('aligned_wtxts_by_qid_by_lang_by_lang')
 
     def _map_word_to_qid_bidirectionally(self, wtxt_1, wtxt_2, lang_1, lang_2):
         """
@@ -528,8 +514,9 @@ class DictionaryCreator(ABC):
         filtered_target_wtxts_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
             for qid, score_by_wtxt in self.top_scores_by_qid_by_lang[target_lang].items():
-                filtered_target_wtxts_by_qid_by_lang[target_lang][qid] = [key for key, value in score_by_wtxt.items() if
-                                                                          value >= self.score_threshold]
+                filtered_target_wtxts_by_qid_by_lang[target_lang][qid] = \
+                    [(wtxt, (score, annotation)) for (wtxt, (score, annotation)) in score_by_wtxt.items() if
+                     score >= self.score_threshold]
         return filtered_target_wtxts_by_qid_by_lang
 
     def _compute_f1_score(self, predicted_target_wtxts_by_qid, target_lang):
@@ -549,27 +536,32 @@ class DictionaryCreator(ABC):
         false_positives = []
         false_negatives = []
         false_negatives_in_verses = []  # only false negatives that appear in at least one verse
-        for qid, wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
-                               desc=f'Counting true positive words in {target_lang} semantic domains',
-                               total=len(predicted_target_wtxts_by_qid),
-                               disable=True):
-            num_positive_wtxts += len(wtxts)
-            for wtxt in wtxts:
+        for qid, annotated_wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
+                                         desc=f'Counting true positive words in {target_lang} semantic domains',
+                                         total=len(predicted_target_wtxts_by_qid),
+                                         disable=True):
+            num_positive_wtxts += len(annotated_wtxts)
+            for wtxt, annotation in annotated_wtxts:
                 num_true_positive_wtxts += wtxt in gt_target_wtxts_by_qid.get(qid, [])
 
-            new_false_positives = list(set(wtxts) - set(gt_target_wtxts_by_qid.get(qid, [])))
-            new_false_positives = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible) for wtxt
-                                   in new_false_positives]
+            annotation_by_wtxt = {wtxt: annotation for wtxt, annotation in annotated_wtxts}
+            assert len(annotation_by_wtxt) == len(annotated_wtxts)
+
+            new_false_positives = list(set(annotation_by_wtxt.keys()) - set(gt_target_wtxts_by_qid.get(qid, [])))
+            new_false_positives = [
+                (wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible, annotation_by_wtxt[wtxt])
+                for wtxt in new_false_positives]
             # sort by number of occurrences in bible
             new_false_positives = sorted(new_false_positives, key=lambda x: x[1], reverse=True)
             false_positives.append((qid, new_false_positives))
 
-            new_false_negatives = list(set(gt_target_wtxts_by_qid.get(qid, [])) - set(wtxts))
+            new_false_negatives = list(set(gt_target_wtxts_by_qid.get(qid, [])) - set(annotation_by_wtxt.keys()))
             false_negatives.append((qid, new_false_negatives))
-            new_false_negatives_in_verses = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible)
-                                             for wtxt in new_false_negatives
-                                             if wtxt in self.words_by_text_by_lang[target_lang]
-                                             and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
+            new_false_negatives_in_verses = [
+                (wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible)
+                for wtxt in new_false_negatives
+                if wtxt in self.words_by_text_by_lang[target_lang]
+                   and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
             # sort by number of occurrences in verses
             new_false_negatives_in_verses = sorted(new_false_negatives_in_verses, key=lambda x: x[1], reverse=True)
             false_negatives_in_verses.append((qid, new_false_negatives_in_verses))
@@ -582,14 +574,14 @@ class DictionaryCreator(ABC):
         # find words that cause most false positive matches
         false_positives_by_wtxt = defaultdict(set)
         for qid, elements in false_positives:
-            for wtxt, _2 in elements:
-                false_positives_by_wtxt[wtxt].add(qid)
+            for wtxt, _, annotation in elements:
+                false_positives_by_wtxt[wtxt].add((qid, annotation))
         false_positives_by_wtxt = sorted(false_positives_by_wtxt.items(), key=lambda x: len(x[1]), reverse=True)
 
         # find words that cause most false negative matches
         false_negatives_in_verses_by_wtxt = defaultdict(set)
         for qid, elements in false_negatives_in_verses:
-            for wtxt, _2 in elements:
+            for wtxt, _ in elements:
                 false_negatives_in_verses_by_wtxt[wtxt].add(qid)
         false_negatives_in_verses_by_wtxt = sorted(false_negatives_in_verses_by_wtxt.items(), key=lambda x: len(x[1]),
                                                    reverse=True)
@@ -726,7 +718,7 @@ class DictionaryCreator(ABC):
         # in all selected target top_scores, look for first ranked target wtxt that also appears in df_test (gt data)
         mean_reciprocal_rank = 0
         for qid, target_wtxts in sorted(target_qids.items()):  # sorting avoids numerical unreproducibility
-            wtxt_list = list(self.top_scores_by_qid_by_lang[target_lang][qid])
+            wtxt_list = list(self.top_scores_by_qid_by_lang[target_lang][qid].keys())
             reciprocal_rank = 0
             for idx, wtxt in enumerate(wtxt_list):
                 if wtxt in target_wtxts:
@@ -767,9 +759,7 @@ class DictionaryCreator(ABC):
                 'F1*': f1_adjusted,
                 'MRR': mean_reciprocal_rank,
             }
-            self.changed_variables.add('evaluation_results_by_lang')
 
     @abstractmethod
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink',
-                          min_count=1):  # pragma: no cover
+    def create_dictionary(self, load=False, save=False, *args, **kwargs):  # pragma: no cover
         pass
