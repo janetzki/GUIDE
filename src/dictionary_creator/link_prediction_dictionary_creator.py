@@ -342,7 +342,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                                             self.strength_by_lang_by_wtxt_by_lang)
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
 
-    def print_lemma_groups(self):
+    def print_lemma_groups(self):  # pragma: no cover
         for lang in self.lemma_group_by_base_lemma_by_lang:
             for base_lemma, lemma_group in self.lemma_group_by_base_lemma_by_lang[lang].items():
                 print(f'{lang} {base_lemma}: {lemma_group}')
@@ -377,8 +377,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
         for word_1, word_2 in tqdm(link_candidates, desc='Predicting links', total=len(link_candidates)):
-            link_score = self._compute_link_score(word_1,
-                                                  word_2)  # todo: current: add early filtering with score threshold?
+            link_score = self._compute_link_score(word_1, word_2)
             self._map_word_to_qid_bidirectionally_with_score(word_1.text, word_2.text,
                                                              word_1.iso_language, word_2.iso_language,
                                                              link_score, score_by_wtxt_by_qid_by_lang)
