@@ -206,7 +206,7 @@ class DictionaryCreator(ABC):
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
             assert most_recent_timestamp < str(self.start_timestamp)
-
+            self.start_timestamp = most_recent_timestamp
         return most_recent_timestamp
 
     def _load_state(self):
@@ -432,7 +432,7 @@ class DictionaryCreator(ABC):
                 loaded_variable = getattr(self, loaded_variable_name)
                 assert loaded_variable is not None
                 if type(loaded_variable) in (dict, list, set, defaultdict):
-                    assert len(loaded_variable) > 0
+                    assert len(loaded_variable) > 0, f'Loaded variable {loaded_variable_name} is empty'
                 if loaded_variable_name.endswith('by_lang'):
                     assert len(loaded_variable) == len(self.target_langs)
 
@@ -528,8 +528,9 @@ class DictionaryCreator(ABC):
         filtered_target_wtxts_by_qid_by_lang = defaultdict(dict)
         for target_lang in self.target_langs:
             for qid, score_by_wtxt in self.top_scores_by_qid_by_lang[target_lang].items():
-                filtered_target_wtxts_by_qid_by_lang[target_lang][qid] = [key for key, value in score_by_wtxt.items() if
-                                                                          value >= self.score_threshold]
+                filtered_target_wtxts_by_qid_by_lang[target_lang][qid] = \
+                    [(wtxt, (score, annotation)) for (wtxt, (score, annotation)) in score_by_wtxt.items() if
+                     score >= self.score_threshold]
         return filtered_target_wtxts_by_qid_by_lang
 
     def _compute_f1_score(self, predicted_target_wtxts_by_qid, target_lang):
@@ -549,27 +550,32 @@ class DictionaryCreator(ABC):
         false_positives = []
         false_negatives = []
         false_negatives_in_verses = []  # only false negatives that appear in at least one verse
-        for qid, wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
-                               desc=f'Counting true positive words in {target_lang} semantic domains',
-                               total=len(predicted_target_wtxts_by_qid),
-                               disable=True):
-            num_positive_wtxts += len(wtxts)
-            for wtxt in wtxts:
+        for qid, annotated_wtxts in tqdm(predicted_target_wtxts_by_qid.items(),
+                                         desc=f'Counting true positive words in {target_lang} semantic domains',
+                                         total=len(predicted_target_wtxts_by_qid),
+                                         disable=True):
+            num_positive_wtxts += len(annotated_wtxts)
+            for wtxt, annotation in annotated_wtxts:
                 num_true_positive_wtxts += wtxt in gt_target_wtxts_by_qid.get(qid, [])
 
-            new_false_positives = list(set(wtxts) - set(gt_target_wtxts_by_qid.get(qid, [])))
-            new_false_positives = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible) for wtxt
-                                   in new_false_positives]
+            annotation_by_wtxt = {wtxt: annotation for wtxt, annotation in annotated_wtxts}
+            assert len(annotation_by_wtxt) == len(annotated_wtxts)
+
+            new_false_positives = list(set(annotation_by_wtxt.keys()) - set(gt_target_wtxts_by_qid.get(qid, [])))
+            new_false_positives = [
+                (wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible, annotation_by_wtxt[wtxt])
+                for wtxt in new_false_positives]
             # sort by number of occurrences in bible
             new_false_positives = sorted(new_false_positives, key=lambda x: x[1], reverse=True)
             false_positives.append((qid, new_false_positives))
 
-            new_false_negatives = list(set(gt_target_wtxts_by_qid.get(qid, [])) - set(wtxts))
+            new_false_negatives = list(set(gt_target_wtxts_by_qid.get(qid, [])) - set(annotation_by_wtxt.keys()))
             false_negatives.append((qid, new_false_negatives))
-            new_false_negatives_in_verses = [(wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible)
-                                             for wtxt in new_false_negatives
-                                             if wtxt in self.words_by_text_by_lang[target_lang]
-                                             and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
+            new_false_negatives_in_verses = [
+                (wtxt, self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible)
+                for wtxt in new_false_negatives
+                if wtxt in self.words_by_text_by_lang[target_lang]
+                   and self.words_by_text_by_lang[target_lang][wtxt].occurrences_in_bible]
             # sort by number of occurrences in verses
             new_false_negatives_in_verses = sorted(new_false_negatives_in_verses, key=lambda x: x[1], reverse=True)
             false_negatives_in_verses.append((qid, new_false_negatives_in_verses))
@@ -582,14 +588,14 @@ class DictionaryCreator(ABC):
         # find words that cause most false positive matches
         false_positives_by_wtxt = defaultdict(set)
         for qid, elements in false_positives:
-            for wtxt, _2 in elements:
-                false_positives_by_wtxt[wtxt].add(qid)
+            for wtxt, _, annotation in elements:
+                false_positives_by_wtxt[wtxt].add((qid, annotation))
         false_positives_by_wtxt = sorted(false_positives_by_wtxt.items(), key=lambda x: len(x[1]), reverse=True)
 
         # find words that cause most false negative matches
         false_negatives_in_verses_by_wtxt = defaultdict(set)
         for qid, elements in false_negatives_in_verses:
-            for wtxt, _2 in elements:
+            for wtxt, _ in elements:
                 false_negatives_in_verses_by_wtxt[wtxt].add(qid)
         false_negatives_in_verses_by_wtxt = sorted(false_negatives_in_verses_by_wtxt.items(), key=lambda x: len(x[1]),
                                                    reverse=True)
@@ -726,7 +732,7 @@ class DictionaryCreator(ABC):
         # in all selected target top_scores, look for first ranked target wtxt that also appears in df_test (gt data)
         mean_reciprocal_rank = 0
         for qid, target_wtxts in sorted(target_qids.items()):  # sorting avoids numerical unreproducibility
-            wtxt_list = list(self.top_scores_by_qid_by_lang[target_lang][qid])
+            wtxt_list = list(self.top_scores_by_qid_by_lang[target_lang][qid].keys())
             reciprocal_rank = 0
             for idx, wtxt in enumerate(wtxt_list):
                 if wtxt in target_wtxts:
@@ -770,6 +776,5 @@ class DictionaryCreator(ABC):
             self.changed_variables.add('evaluation_results_by_lang')
 
     @abstractmethod
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink',
-                          min_count=1):  # pragma: no cover
+    def create_dictionary(self, load=False, save=False, *args, **kwargs):  # pragma: no cover
         pass

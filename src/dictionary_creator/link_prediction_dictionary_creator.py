@@ -345,6 +345,11 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.words_by_text_by_lang[lang][base_lemma_wtxt] = base_lemma_word
         self.changed_variables.add('words_by_text_by_lang')
 
+    def print_lemma_groups(self):
+        for lang in self.lemma_group_by_base_lemma_by_lang:
+            for base_lemma, lemma_group in self.lemma_group_by_base_lemma_by_lang[lang].items():
+                print(f'{lang} {base_lemma}: {lemma_group}')
+
     def _map_word_to_qids_with_score(self, source_wtxt, target_wtxt, source_lang, target_lang, link_score,
                                      score_by_wtxt_by_qid_by_lang):
         """
@@ -353,11 +358,13 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         for new_qid in self.words_by_text_by_lang[source_lang][source_wtxt].qids:
             score_by_wtxt = score_by_wtxt_by_qid_by_lang[target_lang][new_qid]
             if target_wtxt in score_by_wtxt:
-                score_by_wtxt[target_wtxt] = max(score_by_wtxt[target_wtxt], link_score)
+                previous_score = score_by_wtxt[target_wtxt][0]
+                if link_score > previous_score:
+                    score_by_wtxt[target_wtxt] = (link_score, source_wtxt)
                 # todo: find mathematically more elegant solution than using just the highest link score
                 #  (something like 0.7 and 0.3 --> 0.9)
             else:
-                score_by_wtxt[target_wtxt] = link_score
+                score_by_wtxt[target_wtxt] = (link_score, source_wtxt)
 
     def _map_word_to_qid_bidirectionally_with_score(self, wtxt_1, wtxt_2, lang_1, lang_2, link_score,
                                                     score_by_wtxt_by_qid_by_lang):
@@ -373,7 +380,8 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
         score_by_wtxt_by_qid_by_lang = defaultdict(lambda: defaultdict(dict))
         for word_1, word_2 in tqdm(link_candidates, desc='Predicting links', total=len(link_candidates)):
-            link_score = self._compute_link_score(word_1, word_2)
+            link_score = self._compute_link_score(word_1,
+                                                  word_2)  # todo: current: add early filtering with score threshold?
             self._map_word_to_qid_bidirectionally_with_score(word_1.text, word_2.text,
                                                              word_1.iso_language, word_2.iso_language,
                                                              link_score, score_by_wtxt_by_qid_by_lang)
@@ -387,7 +395,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             for qid, score_by_wtxt in tqdm(score_by_wtxt_by_qid.items(),
                                            desc=f'Collecting top {target_lang} scores',
                                            total=len(score_by_wtxt_by_qid)):
-                score_by_wtxt = dict(sorted(score_by_wtxt.items(), key=lambda x: x[1], reverse=True))
+                score_by_wtxt = dict(sorted(score_by_wtxt.items(), key=lambda x: x[1][0], reverse=True))
                 self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 

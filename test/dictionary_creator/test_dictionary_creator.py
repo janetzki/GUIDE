@@ -51,8 +51,7 @@ class AbstractTestDictionaryCreator(TestCase):
             self.dc.words_by_text_by_lang[lang][text] = word
         return word
 
-    def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, plot_word_lang='fra', plot_word='et',
-                                 min_count=1, sd_path_prefix=None):
+    def _run_full_pipeline_twice(self, load_1, save_1, load_2, save_2, sd_path_prefix=None, *args, **kwargs):
         dc_new = self._create_dictionary_creator()
 
         if sd_path_prefix is not None:
@@ -60,11 +59,9 @@ class AbstractTestDictionaryCreator(TestCase):
             dc_new.sd_path_prefix = sd_path_prefix
 
         print('STARTING PIPELINE RUN 1/2')
-        self.dc.create_dictionary(save=save_1, load=load_1, plot_word_lang=plot_word_lang, plot_wtxt=plot_word,
-                                  min_count=min_count)
+        self.dc.create_dictionary(save=save_1, load=load_1, *args, **kwargs)
         print('\n\nSTARTING PIPELINE RUN 2/2')
-        dc_new.create_dictionary(save=save_2, load=load_2, plot_word_lang=plot_word_lang, plot_wtxt=plot_word,
-                                 min_count=min_count)
+        dc_new.create_dictionary(save=save_2, load=load_2, *args, **kwargs)
 
         self.assertEqual(self.dc.progress_log, dc_new.progress_log)
         self.assertEqual(self.dc.sds_by_lang.keys(), dc_new.sds_by_lang.keys())

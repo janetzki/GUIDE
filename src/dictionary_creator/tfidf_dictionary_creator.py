@@ -36,12 +36,13 @@ class TfidfDictionaryCreator(DictionaryCreator):
                 df = df.head(20)
 
                 # convert df to dict
-                scores_by_wtxt = {word: score for word, score in zip(df.index, df['TF-IDF'])}
+                scores_by_wtxt = {word: (score, None) for word, score in
+                                  zip(df.index, df['TF-IDF'])}
 
                 self.top_scores_by_qid_by_lang[target_lang][qid] = scores_by_wtxt
                 self.changed_variables.add('top_scores_by_qid_by_lang')
 
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
+    def create_dictionary(self, load=False, save=False):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
         self._execute_and_track_state(self._train_tfidf_based_model, load=load, save=save)
