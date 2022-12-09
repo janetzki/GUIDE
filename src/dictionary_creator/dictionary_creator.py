@@ -5,6 +5,7 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from datetime import datetime
 from pickle import UnpicklingError
 
 import dill
@@ -84,6 +85,8 @@ class DictionaryCreator(ABC):
         'bid-vie': 'no semdoms available/vie-vie1934.txt',
         'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
         'bid-swp': 'no semdoms available/swp-swp.txt',
+        'bid-meu': '../scripture_cc/no semdoms available/meu-meu.txt',
+        'bid-meu-hmo': '../scripture_cc/no semdoms available/meu-meu-hmo.txt',
     }
 
     def __init__(self, bids, score_threshold=0.5,
@@ -96,7 +99,7 @@ class DictionaryCreator(ABC):
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
-            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp'])
+            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp', 'meu'])
         self.state_files_base_path = state_files_path
         self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
@@ -104,7 +107,9 @@ class DictionaryCreator(ABC):
         self.state_loaded = False
         self.score_threshold = score_threshold
         self.sd_path_prefix = sd_path_prefix
-        self.start_timestamp = str(time.time_ns() // 1000)  # current time in microseconds
+        self.output_file = 'data/evaluation_results.md'
+        self.write_buffer = ''
+        self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
         self.num_verses = 41899
         self.saved_variables = {'progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
                                 'question_by_qid_by_lang', 'wtxts_by_verse_by_bid',
@@ -159,7 +164,7 @@ class DictionaryCreator(ABC):
         print('\nSaving state...')
 
         # create directory if it doesn't exist
-        state_files_directory = os.path.join(self.state_files_base_path, self.start_timestamp)
+        state_files_directory = os.path.join(self.state_files_base_path, str(self.start_timestamp))
         if not os.path.exists(state_files_directory):
             os.makedirs(state_files_directory)
 
@@ -200,8 +205,8 @@ class DictionaryCreator(ABC):
             most_recent_timestamp = timestamps[-1]
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
-            assert most_recent_timestamp < str(self.start_timestamp)
-            self.start_timestamp = most_recent_timestamp
+            assert int(most_recent_timestamp) < self.start_timestamp
+            self.start_timestamp = int(most_recent_timestamp)
         return most_recent_timestamp
 
     def _load_state(self):
@@ -273,7 +278,7 @@ class DictionaryCreator(ABC):
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
-                if lang not in ('deu', 'rus', 'vie', 'tpi'):
+                if lang not in ('deu', 'rus', 'vie', 'tpi', 'swp', 'meu'):
                     raise FileNotFoundError(f'Unable to load {sd_path}')
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
@@ -284,10 +289,14 @@ class DictionaryCreator(ABC):
             assert len(self.verses_by_bid[bid]) == self.num_verses
 
     def _build_sds(self):
-        # convert sd dataframe to dictionary
-        # optional: increase performance by querying wtxts from words_eng
-        # optional: increase performance by using dataframe instead of dict
+        """
+        Convert a semantic domain dataframe to a dictionary.
+        :return: None
+        """
+        # optional todo: increase performance by querying wtxts from words_eng
+        # optional todo: increase performance by using dataframe instead of dict
         for lang, sds in tqdm(self.sds_by_lang.items(), desc='Building semantic domains', total=len(self.sds_by_lang)):
+            self.question_by_qid_by_lang[lang] = {}  # show that we tried building sds for this language
             for index, row in sds.iterrows():
                 question = row.question.replace("'", '')
                 question = question.replace('"', '')
@@ -435,7 +444,7 @@ class DictionaryCreator(ABC):
     def _execute_and_track_state(self, func, step_name=None, save=False, load=False, *args, **kwargs):
         if step_name is None:
             step_name = func.__name__
-        if self._check_already_done(step_name, load):
+        if self._check_already_done(step_name, load) and step_name != '_evaluate':
             print(f'Skipped: {step_name} already done')
             return
         func(*args, **kwargs)
@@ -620,46 +629,46 @@ class DictionaryCreator(ABC):
 
         # How many of the found target wtxts actually appear in the ground-truth set?
         precision = num_true_positive_wtxts / num_positive_wtxts
-        print(f'precision: {precision:.3f} ({num_true_positive_wtxts} '
-              f'/ {num_positive_wtxts} found {target_lang} semantic domain words are correct)')
+        self._print_and_write_metric('precision', precision, f'{num_true_positive_wtxts} '
+                                                             f'/ {num_positive_wtxts} found {target_lang} semantic domain words are correct')
 
         # How many of the target sd wtxts in the ground-truth set were actually found?
         recall = num_true_positive_wtxts / num_total_gt_target_wtxts
-        print(f'recall:    {recall:.3f} ({num_true_positive_wtxts} '
-              f'/ {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found)')
+        self._print_and_write_metric('recall', recall, f'{num_true_positive_wtxts} '
+                                                       f'/ {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found')
 
         f1 = 0.0 if precision * recall == 0 else 2 * (precision * recall) / (precision + recall)
-        print(f'F1:        {f1:.3f}')
+        self._print_and_write_metric('f1', f1)
 
         # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # was actually found?
         recall_adjusted = 0.0 if num_true_positive_wtxts == 0 \
             else num_true_positive_wtxts / num_total_gt_sd_wtxts_in_target_verses
-        print(f'recall*:   {recall_adjusted:.3f} ({num_true_positive_wtxts} '
-              f'/ {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
-              f'- that also appear in the target verses - found)')
+        self._print_and_write_metric('recall*', recall_adjusted, f'{num_true_positive_wtxts} '
+                                                                 f'/ {num_total_gt_sd_wtxts_in_target_verses} {target_lang} actual semantic domain words '
+                                                                 f'- that also appear in the target verses - found')
 
         f1_adjusted = 0.0 if precision * recall_adjusted == 0 else 2 * (precision * recall_adjusted) / (
                 precision + recall_adjusted)
-        print(f'F1*:       {f1_adjusted:.3f}\n')
+        self._print_and_write_metric('F1*', f1_adjusted)
 
         # How many of the gt target wtxts appear in the target verses?
         target_wtxt_coverage = num_total_gt_sd_wtxts_in_target_verses / num_total_gt_target_wtxts
-        print(
-            f'Ground truth target word coverage: {target_wtxt_coverage:.3f} ({num_total_gt_sd_wtxts_in_target_verses} '
-            f'/ {num_total_gt_target_wtxts} {target_lang} actual non-unique semantic domain words '
-            f'also appear in the target verses)')
+        self._print_and_write_metric('Ground truth target word coverage', target_wtxt_coverage,
+                                     f'{num_total_gt_sd_wtxts_in_target_verses} '
+                                     f'/ {num_total_gt_target_wtxts} {target_lang} actual non-unique semantic domain words '
+                                     f'also appear in the target verses')
 
         # # How many of the source wtxts appear in the source verses?
         # source_wtxt_coverage = num_total_sd_wtxts_in_source_verses / num_total_sd_source_wtxts
-        # print(f'Source wtxt coverage: {source_wtxt_coverage:.3f} ({num_total_sd_wtxts_in_source_verses} '
+        # self._print_and_write_metric(f'Source wtxt coverage: {source_wtxt_coverage:.3f} ({num_total_sd_wtxts_in_source_verses} '
         #       f'/ {len(num_total_sd_source_wtxts)} {self.source_language} actual non-unique semantic domain words '
         #       'also appear in the source verses)')
 
-        # optional: consider wtxt groups vs. single wtxts in calculation
+        # optional todo: consider wtxt groups vs. single wtxts in calculation
         # # How many of the single gt target wtxts appear in the target verses?
         # target_wtxt_coverage = num_total_single_gt_sd_wtxts_in_target_verses / num_total_gt_target_wtxts
-        # print(f'Ground truth single target wtxt coverage: {target_wtxt_coverage:.3f} '
+        # self._print_and_write_metric(f'Ground truth single target wtxt coverage: {target_wtxt_coverage:.3f} '
         #       f'({num_total_single_gt_sd_wtxts_in_target_verses} '
         #       f'/ {num_total_gt_target_wtxts} {self.target_language} actual non-unique semantic domain words '
         #       'also appear in the target verses)')
@@ -667,13 +676,13 @@ class DictionaryCreator(ABC):
         # # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # # was actually found?
         # recall_adjusted2 = num_true_positive_wtxts / num_total_single_gt_sd_wtxts_in_target_verses
-        # print(f'recall**: {recall_adjusted2:.3f} ({num_true_positive_wtxts} '
+        # self._print_and_write_metric(f'recall**: {recall_adjusted2:.3f} ({num_true_positive_wtxts} '
         #       f'/ {num_total_single_gt_sd_wtxts_in_target_verses} {self.target_language} '
         #       f'actual single semantic domain words '
         #       '- that also appear in the target verses - found)')
         #
         # f1_adjusted2 = 2 * (precision * recall_adjusted2) / (precision + recall_adjusted2)
-        # print(f'F1**: {f1_adjusted2:.3f}')
+        # self._print_and_write_metric(f'F1**: {f1_adjusted2:.3f}')
         return precision, recall, f1, recall_adjusted, f1_adjusted
 
     def _load_test_data(self, target_lang):
@@ -725,23 +734,56 @@ class DictionaryCreator(ABC):
                     reciprocal_rank = 1 / (idx + 1)
                     break
             if print_reciprocal_ranks:
-                print(qid)
-                print('\t', self.question_by_qid_by_lang[self.source_lang][qid])
-                print('\t found (positive) words:', wtxt_list)
-                print('\t reference (true) words:', target_wtxts)
-                print('\t reciprocal rank:       ', f'{reciprocal_rank:.2f}\n')
+                self._print_and_write(qid)
+                self._print_and_write('\t' + str(self.question_by_qid_by_lang[self.source_lang][qid]))
+                self._print_and_write('\t found (positive) words:' + str(wtxt_list))
+                self._print_and_write('\t reference (true) words:' + str(target_wtxts))
+                self._print_and_write('\t reciprocal rank:       ' + str(f'{reciprocal_rank:.2f}\n'))
             mean_reciprocal_rank += reciprocal_rank
         mean_reciprocal_rank /= len(target_qids)
-        print(
-            f'{len(target_qids)} / {len(self.top_scores_by_qid_by_lang[target_lang])} {target_lang} questions selected')
-        print(f'MRR: {mean_reciprocal_rank:.3f}')
+        self._print_and_write_metric('MRR', mean_reciprocal_rank,
+                                     f'{len(target_qids)} / {len(self.top_scores_by_qid_by_lang[target_lang])} {target_lang} '
+                                     f'questions selected')
         return mean_reciprocal_rank
+
+    def _print_and_write(self, text):
+        """
+        Print text to stdout and a write buffer.
+        :return: None
+        """
+        print(text)
+        self.write_buffer += text + '  \n'
+
+    def _print_and_write_metric(self, metric, value, note=''):
+        """
+        Print formatted metric to stdout and a write buffer.
+        """
+        self.write_buffer += f'| {metric} | {value:.3f} | {note} |\n'
+        padding = ' ' * (10 - len(metric))
+        if len(note):
+            note = f'({note})'
+        print(f'{metric}:{padding} {value:.3f} {note}')
+
+    def _flush(self):
+        """
+        Flush the write buffer and prepend it to the output file.
+        :return: None
+        """
+        with open(self.output_file, 'r+') as f:
+            content = f.read()
+            f.seek(0, 0)
+            f.write(self.write_buffer + '---\n\n' + content)
 
     def _evaluate(self, print_reciprocal_ranks=False):
         filtered_target_wtxts_by_qid_by_lang = self._filter_target_sds_with_threshold()
-        print(f'\n\n\'=== Bibles: {self.bids}, Threshold: {self.score_threshold} ===')
+        self._print_and_write(datetime.now().strftime('\n# %d/%m/%Y %H:%M:%S'))
+        self._print_and_write(f'Bibles: `{self.bids}`')
+        self._print_and_write(f'Threshold: {self.score_threshold}')
+
         for target_lang in self.target_langs:
-            print(f'\n\n--- Evaluation for {target_lang} ---')
+            self._print_and_write(f'\n\n## Evaluation for {target_lang}')
+            self.write_buffer += '| metric | value | note |\n'
+            self.write_buffer += '|:-------|:------|:-----|\n'
             predicted_target_wtxts_by_qid = filtered_target_wtxts_by_qid_by_lang[target_lang]
             if len(predicted_target_wtxts_by_qid) == 0:
                 print(f'Cannot compute F1 score etc. and MRR for {target_lang} '
@@ -759,6 +801,7 @@ class DictionaryCreator(ABC):
                 'F1*': f1_adjusted,
                 'MRR': mean_reciprocal_rank,
             }
+        self._flush()
 
     @abstractmethod
     def create_dictionary(self, load=False, save=False, *args, **kwargs):  # pragma: no cover
