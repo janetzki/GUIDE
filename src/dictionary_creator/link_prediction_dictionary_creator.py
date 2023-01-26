@@ -207,7 +207,8 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             nx.draw_networkx_edge_labels(displayed_subgraph, pos, edge_labels=edge_weights)
 
         # plot the title
-        title = f'Words that fast_align aligned with the {lang} word "{text}"'
+        title = 'Words that fast_align aligned with the\n' \
+                f'{lang} word "{text}"'
         if min_count > 1:
             title += f' at least {min_count} times'
         plt.title(title)
@@ -394,7 +395,8 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 score_by_wtxt = dict(sorted(score_by_wtxt.items(), key=lambda x: x[1][0], reverse=True))
                 self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
 
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1):
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1,
+                          print_reciprocal_ranks=False):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
 
@@ -413,4 +415,4 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
         self._execute_and_track_state(self._predict_translation_links, load=load, save=save)
         self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
-        self._execute_and_track_state(self._evaluate, print_reciprocal_ranks=False)
+        self._execute_and_track_state(self._evaluate, print_reciprocal_ranks=print_reciprocal_ranks)

@@ -240,7 +240,7 @@ class DictionaryCreator(ABC):
                         print(f'- {path} loaded.')
                         return file_content
                 except (EOFError, UnpicklingError):
-                    print(f'- {path} is broken. Skipping.')
+                    print(f'- WARNING: {path} is broken. Skipping.')
                     return fallback_value
 
             # get all matching file names in directory
@@ -686,8 +686,18 @@ class DictionaryCreator(ABC):
         return precision, recall, f1, recall_adjusted, f1_adjusted
 
     def _load_test_data(self, target_lang):
-        # load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation)
-        df_test = pd.read_csv('data/multilingual_semdom_dictionary.csv')
+        """
+        Load source and corresponding target wtxts from Purdue Team (ground truth data for dictionary creation).
+        :param target_lang: The language that should be evaluated.
+        :return: A dataframe with the source and target wtxts.
+        """
+        if target_lang in ('urd'):
+            print(f'Cannot compute MRR for {target_lang} because no ground truth data is available.')
+            return None
+        elif target_lang in ('tpi', 'swp'):  # , 'meu')
+            df_test = pd.read_csv('data/eng-tpi-meu-swp.csv')
+        else:
+            df_test = pd.read_csv('data/multilingual_semdom_dictionary.csv')
         df_test = df_test[[f'{self.source_lang}-000.txt', f'{target_lang}-000.txt']]
         df_test.columns = ['source_wtxt', 'target_wtxts']
         df_test = df_test[df_test['target_wtxts'].notna()]
@@ -705,11 +715,10 @@ class DictionaryCreator(ABC):
         # MRR improvement todo: Also filter out source wtxts (and questions, if empty) that do not appear
         #   in the source verses. (e.g., 'snake' does not appear in the KJV bible)
         # MRR improvement todo: also do this for source langs different from eng
-        if target_lang in ('urd', 'tpi'):
-            print(f'Cannot compute MRR for {target_lang} because no ground truth data is available.')
-            return None
         target_qids = defaultdict(list)
         df_test = self._load_test_data(target_lang)
+        if df_test is None:
+            return None
 
         for _, row in tqdm(df_test.iterrows(),
                            desc=f'Filtering {target_lang} question ids',
@@ -734,11 +743,11 @@ class DictionaryCreator(ABC):
                     reciprocal_rank = 1 / (idx + 1)
                     break
             if print_reciprocal_ranks:
-                self._print_and_write(qid)
-                self._print_and_write('\t' + str(self.question_by_qid_by_lang[self.source_lang][qid]))
-                self._print_and_write('\t found (positive) words:' + str(wtxt_list))
-                self._print_and_write('\t reference (true) words:' + str(target_wtxts))
-                self._print_and_write('\t reciprocal rank:       ' + str(f'{reciprocal_rank:.2f}\n'))
+                print(qid)
+                print('\t' + str(self.question_by_qid_by_lang[self.source_lang][qid]))
+                print('\t found (positive) words:' + str(wtxt_list))
+                print('\t reference (true) words:' + str(target_wtxts))
+                print('\t reciprocal rank:       ' + str(f'{reciprocal_rank:.2f}\n'))
             mean_reciprocal_rank += reciprocal_rank
         mean_reciprocal_rank /= len(target_qids)
         self._print_and_write_metric('MRR', mean_reciprocal_rank,

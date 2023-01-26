@@ -14,9 +14,8 @@ if __name__ == '__main__':  # pragma: no cover
 
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
-    # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-tpi'], score_threshold=0.2)
-    dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-meu'], score_threshold=0.2)
-    dc.create_dictionary(load=True, save=False, plot_wtxt='water', min_count=4)
+    dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-tpi'], score_threshold=0.2)
+    dc.create_dictionary(load=True, save=True, plot_wtxt='water', min_count=4, print_reciprocal_ranks=True)
     dc._save_state()
     # dc.print_lemma_groups()
     dc._plot_subgraph(lang='eng', text='graven', min_count=4)
