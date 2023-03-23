@@ -5,7 +5,11 @@ from src.dictionary_creator.link_prediction_dictionary_creator import LinkPredic
 if __name__ == '__main__':  # pragma: no cover
     LinkPredictionDictionaryCreator.BIBLES_BY_BID.update({
         'bid-eng-DBY-1000': '../../../dictionary_creator/test/data/eng-engDBY-1000-verses.txt',
+        'bid-eng-DBY-100': '../../../dictionary_creator/test/data/eng-engDBY-100-verses.txt',
+        'bid-eng-DBY-10': '../../../dictionary_creator/test/data/eng-engDBY-10-verses.txt',
         'bid-fra-fob-1000': '../../../dictionary_creator/test/data/fra-fra_fob-1000-verses.txt',
+        'bid-fra-fob-100': '../../../dictionary_creator/test/data/fra-fra_fob-100-verses.txt',
+        'bid-fra-fob-10': '../../../dictionary_creator/test/data/fra-fra_fob-10-verses.txt',
     })
 
     # set the working directory to the project root
@@ -15,7 +19,7 @@ if __name__ == '__main__':  # pragma: no cover
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob'], score_threshold=0.2)
     dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-tpi'], score_threshold=0.2)
-    dc.create_dictionary(load=True, save=True, plot_wtxt='water', min_count=4, print_reciprocal_ranks=True)
+    dc.create_dictionary(load=False, save=False, plot_wtxt='water', min_count=4, print_reciprocal_ranks=True)
     dc._save_state()
     # dc.print_lemma_groups()
     dc._plot_subgraph(lang='eng', text='graven', min_count=4)

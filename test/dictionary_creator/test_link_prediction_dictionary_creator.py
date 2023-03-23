@@ -36,11 +36,6 @@ class TestLinkPredictionDictionaryCreator(AbstractTestDictionaryCreator):
 
 
 class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreator):
-
-    def test_full_pipeline_with_loading_and_with_link_prediction(self):
-        self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
-                                      plot_word_lang='fra', plot_wtxt='et', min_count=2)
-
     def test_load_only_most_current_file(self):
         self.dc.evaluation_results_by_lang = {
             'eng': {'precision': 0.5}
@@ -132,60 +127,6 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     # def test__tokenize_verses(self):
     #     self.fail()
-
-    def test__combine_alignments(self):
-        self.dc.wtxts_by_verse_by_bid = {
-            'bid-eng-DBY-10': [
-                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
-                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
-                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
-                 'face', 'of', 'the', 'water', '.'],
-                [],
-                [],
-            ],
-            'bid-fra-fob-10': [
-                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
-                ['or', 'la', 'terre', 'était', 'informe', 'et', 'vide', ',', 'et', 'les', 'ténèbres', 'étaient',
-                 'à', 'la', 'surface', 'de', 'l', "'", 'abîme', ',', 'et', 'l', "'", 'esprit', 'de', 'dieu', 'se',
-                 'mouvait', 'sur', 'les', 'eaux', '.'],
-                [],
-                [],
-            ],
-        }
-
-        self.dc._combine_alignments()
-
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align'))
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align'))
-
-    def test__combine_alignments_with_missing_verse(self):
-        self.dc.wtxts_by_verse_by_bid = {
-            'bid-eng-DBY-10': [
-                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
-                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
-                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
-                 'face', 'of', 'the', 'water', '.'],
-                [],
-                [],
-            ],
-            'bid-fra-fob-10': [
-                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
-                [],
-                [],
-                [],
-            ],
-        }
-
-        self.dc._combine_alignments()
-
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align'))
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align'))
-
-    def test__preprocess_data(self):
-        self.dc._preprocess_data()
-
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align'))
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align'))
 
     # def test__add_directed_edge(self):
     #     self.fail()
@@ -678,6 +619,72 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
 class TestLinkPredictionDictionaryCreatorSlow(TestLinkPredictionDictionaryCreator):
     # This class is for slower test cases.
+    def test_full_pipeline_with_loading_and_with_link_prediction(self):
+        self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
+                                      plot_word_lang='fra', plot_wtxt='et', min_count=2)
+
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
         self._run_full_pipeline_twice(check_isomorphism=False, load_1=False, save_1=False, load_2=False, save_2=False,
                                       sd_path_prefix='../semdom extractor/output/semdom_qa_clean')
+
+    def test__combine_alignments(self):
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
+                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
+                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
+                 'face', 'of', 'the', 'water', '.'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
+                ['or', 'la', 'terre', 'était', 'informe', 'et', 'vide', ',', 'et', 'les', 'ténèbres', 'étaient',
+                 'à', 'la', 'surface', 'de', 'l', "'", 'abîme', ',', 'et', 'l', "'", 'esprit', 'de', 'dieu', 'se',
+                 'mouvait', 'sur', 'les', 'eaux', '.'],
+                [],
+                [],
+            ],
+        }
+        self.dc.num_verses = 4
+
+        self.dc._combine_alignments()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align') or
+                        os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_awesome.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align') or
+                        os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_awesome.align'))
+
+    def test__combine_alignments_with_missing_verse(self):
+        self.dc.wtxts_by_verse_by_bid = {
+            'bid-eng-DBY-10': [
+                ['in', 'the', 'beginning', 'god', 'create', 'the', 'heaven', 'and', 'the', 'earth', '.'],
+                ['and', 'the', 'earth', 'be', 'waste', 'and', 'empty', ',', 'and', 'darkness', 'be', 'on', 'the',
+                 'face', 'of', 'the', 'deep', ',', 'and', 'the', 'spirit', 'of', 'god', 'be', 'hover', 'over', 'the',
+                 'face', 'of', 'the', 'water', '.'],
+                [],
+                [],
+            ],
+            'bid-fra-fob-10': [
+                ['au', 'commencement', ',', 'dieu', 'créa', 'les', 'cieux', 'et', 'la', 'terre', '.'],
+                [],
+                [],
+                [],
+            ],
+        }
+        self.dc.num_verses = 4
+
+        self.dc._combine_alignments()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align') or
+                        os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_awesome.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align') or
+                        os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_awesome.align'))
+
+    def test__preprocess_data(self):
+        self.dc._preprocess_data()
+
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align') or
+                        os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_awesome.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align') or
+                        os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_awesome.align'))

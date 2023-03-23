@@ -6,7 +6,7 @@ eval suffix="$3"
 eval base_path="~/repos/mt/dictionary_creator/"
 eval file_path="$(pwd)/$4/${input1_path}_${input2_path}_${suffix}"
 
-# # fast_align
+## fast_align
 # "${base_path}"/fast_align/build/fast_align -i "${file_path}.txt" -d -o -v > "${file_path}_forward.align"
 # "${base_path}"/fast_align/build/fast_align -i "${file_path}.txt" -d -o -v -r > "${file_path}_reverse.align"
 # "${base_path}"/fast_align/build/atools -i "${file_path}_forward.align" -j "${file_path}_reverse.align" -c grow-diag-final-and > "${file_path}_diag.align"
@@ -15,10 +15,12 @@ eval file_path="$(pwd)/$4/${input1_path}_${input2_path}_${suffix}"
 # rm "${file_path}_reverse.align"
 
 DATA_FILE="${file_path}.txt"
-MODEL_NAME_OR_PATH=bert-base-multilingual-cased
 OUTPUT_FILE="${file_path}_awesome.align"
 
-# code from https://github.com/neulab/awesome-align/blob/master/README.md
+echo "DATA_FILE: $DATA_FILE"
+echo "OUTPUT_FILE: $OUTPUT_FILE"
+
+## code from https://github.com/neulab/awesome-align/blob/master/README.md
 # fine-tuning
 #CUDA_VISIBLE_DEVICES=0 awesome-train \
 #    --output_dir=$OUTPUT_DIR \
@@ -38,9 +40,8 @@ OUTPUT_FILE="${file_path}_awesome.align"
 #    #--eval_data_file=$EVAL_FILE
 
 CUDA_VISIBLE_DEVICES=0 awesome-align \
-    --output_file=$OUTPUT_FILE \
-    --model_name_or_path=$MODEL_NAME_OR_PATH \
-    --data_file=$DATA_FILE \
-    --extraction 'softmax' \
-    --batch_size 32
-
+  --output_file=$OUTPUT_FILE \
+  --model_name_or_path=bert-base-multilingual-cased \
+  --data_file=$DATA_FILE \
+  --extraction 'softmax' \
+  --batch_size 32

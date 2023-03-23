@@ -383,7 +383,7 @@ class DictionaryCreator(ABC):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
 
-                aligned_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_awesome_fta.align'
+                aligned_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_awesome.align'
                 if os.path.isfile(aligned_bibles_file_path):
                     print(f'Skipped: Aligned bibles file {aligned_bibles_file_path} already exists')
                     continue
@@ -402,22 +402,31 @@ class DictionaryCreator(ABC):
                             bid_1_wtxts = ['#placeholder#']
                             bid_2_wtxts = ['#placeholder#']
                         combined_bibles.write(' '.join(bid_1_wtxts) + ' ||| ' + ' '.join(bid_2_wtxts) + '\n')
-
-                process = subprocess.Popen(
-                    ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer,
-                     self.aligned_bibles_path],
-                    text=True, stdout=subprocess.PIPE,
+                process = subprocess.run(
+                    ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer, self.aligned_bibles_path],
+                    text=True,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE)  # caution: the release mode (no debugger) might skip this for some reason
 
-                for c in iter(lambda: process.stdout.read(1), b""):
-                    sys.stdout.buffer.write(c.encode())
+                # print the output of the shell script
+                print(process.stdout)
+                print(process.stderr)
 
-                for c in iter(lambda: process.stderr.read(1), b""):
-                    sys.stderr.buffer.write(c.encode())
+                # truncate aligned_bibles_file_path after self.num_verses lines
+                # (for some reason, AWESoME align might produce more alignments than there are verses)
+                with open(aligned_bibles_file_path, 'r') as aligned_bibles:
+                    lines = aligned_bibles.readlines()
+                with open(aligned_bibles_file_path, 'w') as aligned_bibles:
+                    aligned_bibles.writelines(lines[:self.num_verses])
 
-                assert len(open(aligned_bibles_file_path).readlines()) == (self.num_verses, self.num_verses + 1)
+                # all the remaining lines should be '0-0'
+                for line in lines[self.num_verses:]:
+                    assert line == '0-0\n'
 
-                # # retrieve the final entropy and perplexity
+                with open(aligned_bibles_file_path, 'r') as aligned_bibles:
+                    assert len(aligned_bibles.readlines()) == self.num_verses
+
+                ## retrieve the final entropy and perplexity
                 # matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
                 # cross_entropy = float(matches.group(2))
                 # perplexity = float(matches.group(3))
@@ -522,7 +531,7 @@ class DictionaryCreator(ABC):
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
-                with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_awesome_fta.align',
+                with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_awesome.align',
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
