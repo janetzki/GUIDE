@@ -198,6 +198,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             link_score = self._compute_link_score(edge[0], edge[1])
             color = 'green' if link_score >= self.score_threshold else 'gray'
             nx.draw_networkx_edges(displayed_subgraph, pos=pos, edgelist=[edge],
+                                   # caution: might fail in debug mode with Python 3.10 instead of Python 3.9 or 3.11
                                    width=[math.log(edge[2]) + 1], alpha=0.5,
                                    edge_color=color)
 

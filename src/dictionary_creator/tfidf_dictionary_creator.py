@@ -28,7 +28,8 @@ class TfidfDictionaryCreator(DictionaryCreator):
             assert tfidfs.shape[0] == len(aligned_wtxts_by_qid)
             for idx, tfidf in tqdm(enumerate(tfidfs),
                                    desc=f'Collecting top {target_lang} tf-idf scores',
-                                   total=tfidfs.shape[0]):
+                                   total=tfidfs.shape[
+                                       0]):  # caution: might fail in debug mode with Python 3.10 instead of Python 3.9
                 qid = list(aligned_wtxts_by_qid.keys())[idx]
                 df = pd.DataFrame(tfidf.T.todense(), index=self.vectorizer.get_feature_names_out(), columns=['TF-IDF'])
                 df = df.sort_values('TF-IDF', ascending=False)
