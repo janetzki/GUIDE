@@ -33,6 +33,6 @@ class SemanticDomainIdentifier(object):
         # todo ~#1: evaluate identified semantic domains with verse-semdom mappings from human labeler
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     sdi = SemanticDomainIdentifier()
     qids = sdi.identify_semantic_domains()
