@@ -221,7 +221,7 @@ class DictionaryCreator(ABC):
             self.state_loaded = True
             return
 
-        print('Loading state...')
+        print(f'Loading state {state_files_directory}...')
         state_files_directory = os.path.join(self.state_files_base_path, state_files_directory)
         file_names = os.listdir(state_files_directory)
 
