@@ -93,6 +93,7 @@ class DictionaryCreator(ABC):
                  state_files_path='data/0_state',
                  aligned_bibles_path='data/1_aligned_bibles',
                  sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
+        assert len(bids) == len(set(bids))  # distinct elements
         self.bids = bids
         self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
         self.source_bid = self.bids[0]
@@ -638,7 +639,7 @@ class DictionaryCreator(ABC):
                                                        f'/ {num_total_gt_target_wtxts} {target_lang} actual semantic domain words found')
 
         f1 = 0.0 if precision * recall == 0 else 2 * (precision * recall) / (precision + recall)
-        self._print_and_write_metric('f1', f1)
+        self._print_and_write_metric('F1', f1)
 
         # How many of the target sd wtxts in the ground-truth set - that also appear in the target verses -
         # was actually found?
