@@ -208,7 +208,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             nx.draw_networkx_edge_labels(displayed_subgraph, pos, edge_labels=edge_weights)
 
         # plot the title
-        title = 'Words that fast_align aligned with the\n' \
+        title = 'Words that Eflomal aligned with the\n' \
                 f'{lang} word "{text}"'
         if min_count > 1:
             title += f' at least {min_count} times'
@@ -398,7 +398,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
 
     def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1,
-                          print_reciprocal_ranks=False):
+                          print_reciprocal_ranks=False, plot_subgraph=True):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
 
@@ -406,7 +406,8 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         self._execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
                                       load=load, save=save)
 
-        self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
+        if plot_subgraph:
+            self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
 
         self._execute_and_track_state(self._predict_lemmas, load=load, save=save)
         self._execute_and_track_state(self._contract_lemmas, load=load, save=save)
@@ -416,5 +417,6 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                                       load=load, save=save)
 
         self._execute_and_track_state(self._predict_translation_links, load=load, save=save)
-        self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
+        if plot_subgraph:
+            self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
         self._execute_and_track_state(self._evaluate, print_reciprocal_ranks=print_reciprocal_ranks)

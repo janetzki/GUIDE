@@ -155,8 +155,8 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
         self.dc._combine_alignments()
 
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align'))
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_eflomal_diag.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_eflomal_diag.align'))
 
     def test__combine_alignments_with_missing_verse(self):
         self.dc.wtxts_by_verse_by_bid = {
@@ -178,14 +178,14 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
         self.dc._combine_alignments()
 
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align'))
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_eflomal_diag.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_eflomal_diag.align'))
 
     def test__preprocess_data(self):
         self.dc._preprocess_data()
 
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_diag.align'))
-        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_diag.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-eng-DBY-10_bpe_eflomal_diag.align'))
+        self.assertTrue(os.path.isfile('test/data/1_aligned_bibles/bid-eng-DBY-10_bid-fra-fob-10_bpe_eflomal_diag.align'))
 
     # def test__add_directed_edge(self):
     #     self.fail()

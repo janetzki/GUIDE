@@ -7,3 +7,4 @@ event_log.txt
 fast_align/
 dictionary/creator/src/gnn/wandb/
 awesome_align/
+my_utils/
