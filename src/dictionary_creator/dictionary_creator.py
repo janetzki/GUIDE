@@ -87,6 +87,7 @@ class DictionaryCreator(ABC):
         'bid-swp': 'no semdoms available/swp-swp.txt',
         'bid-meu': '../scripture_cc/no semdoms available/meu-meu.txt',
         'bid-meu-hmo': '../scripture_cc/no semdoms available/meu-meu-hmo.txt',
+        'bid-gej': '../scripture_copyrighted/no semdoms available/gej-GEN.txt',
     }
 
     def __init__(self, bids, score_threshold=0.5,
@@ -100,7 +101,7 @@ class DictionaryCreator(ABC):
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
-            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp', 'meu'])
+            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp', 'meu', 'gej'])
         self.state_files_base_path = state_files_path
         self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
@@ -110,7 +111,7 @@ class DictionaryCreator(ABC):
         self.sd_path_prefix = sd_path_prefix
         self.output_file = 'data/evaluation_results.md'
         self.write_buffer = ''
-        self.start_timestamp = time.time_ns() // 1000  # current time in microseconds
+        self.start_timestamp = datetime.fromtimestamp(time.time_ns() / 1e9).strftime('%Y-%m-%d %H:%M:%S')
         self.num_verses = 41899
         self.saved_variables = {'progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
                                 'question_by_qid_by_lang', 'wtxts_by_verse_by_bid',
@@ -162,10 +163,10 @@ class DictionaryCreator(ABC):
         return ((u, v, func(u, v)) for u, v in ebunch)
 
     def _save_state(self):
-        print('\nSaving state...')
-
+        state_files_directory = self.start_timestamp + ' ' + ' '.join(self.bids)
+        print(f'\nSaving state {state_files_directory}...')
         # create directory if it doesn't exist
-        state_files_directory = os.path.join(self.state_files_base_path, str(self.start_timestamp))
+        state_files_directory = os.path.join(self.state_files_base_path, state_files_directory)
         if not os.path.exists(state_files_directory):
             os.makedirs(state_files_directory)
 
@@ -198,20 +199,26 @@ class DictionaryCreator(ABC):
         sys.stdout.flush()
 
     def _find_state_directory(self):
-        # Directory names are timestamps. Find the most recent directory.
-        timestamps = os.listdir(self.state_files_base_path)
-        timestamps.sort()
-        most_recent_timestamp = None
-        if len(timestamps):
-            most_recent_timestamp = timestamps[-1]
+        """
+        Directory names start with timestamps. Find the most recent directory that contains all the used BIDs.
+        """
+        directories = os.listdir(self.state_files_base_path)
+        for bid in self.bids:
+            directories = [directory for directory in directories if bid in directory]
+        directories.sort()
+
+        most_recent_directory = None
+        if len(directories):
+            most_recent_directory = directories[-1]
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
-            assert int(most_recent_timestamp) < self.start_timestamp
-            self.start_timestamp = int(most_recent_timestamp)
-        return most_recent_timestamp
+            most_recent_timestamp = most_recent_directory.split(' ')[0]
+            assert most_recent_timestamp < self.start_timestamp
+            self.start_timestamp = most_recent_timestamp
+        return most_recent_directory
 
     def _load_state(self):
-        # file path format: {state_files_base_path}/{start_timestamp}/{variable_name}_{key}.dill
+        # file path format: {state_files_base_path}/{start_timestamp} {bids}/{variable_name}_{key}.dill
         if self.state_loaded:
             return
 
@@ -279,7 +286,7 @@ class DictionaryCreator(ABC):
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
-                if lang not in ('deu', 'rus', 'vie', 'tpi', 'swp', 'meu'):
+                if lang not in ('deu', 'rus', 'vie', 'tpi', 'swp', 'meu', 'gej'):
                     raise FileNotFoundError(f'Unable to load {sd_path}')
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
@@ -305,8 +312,8 @@ class DictionaryCreator(ABC):
                 answer = answer.replace('"', '')
                 qid = f'{row.cid} {row.question_index}'
                 wtxts = [wtxt.strip().lower() for wtxt in answer.split(',') if wtxt]
-                if lang == 'eng':
-                    wtxts = self._lemmatize_english_verse(wtxts)
+                # if lang == 'eng':
+                #     wtxts = self._lemmatize_english_verse(wtxts)
                 words = {wtxt: Word(wtxt.strip(), lang, {qid}) for wtxt in wtxts}
 
                 # add new words to words_by_text_by_lang
@@ -319,10 +326,18 @@ class DictionaryCreator(ABC):
                 self.question_by_qid_by_lang[lang][qid] = question
 
     def _lemmatize_english_verse(self, verse):
+        for wtxt in verse:
+            assert '_' not in wtxt, f'Unexpected underscore in {wtxt}'
+
         # https://stackoverflow.com/a/57686805/8816968
         lemmatized_wtxts = []
         pos_labels = pos_tag(verse)
         for wtxt, pos_label in pos_labels:
+            if wtxt in ('as', 'us'):
+                # do not replace 'as' with 'a' or 'us' with 'u'
+                lemmatized_wtxts.append(wtxt)
+                continue
+
             pos_label = pos_label[0].lower()
             if pos_label == 'j':
                 pos_label = 'a'  # reassignment
@@ -340,6 +355,12 @@ class DictionaryCreator(ABC):
                 lemmatized_wtxts.append(self.eng_lemmatizer.lemmatize(wtxt, pos=pos_label))
             else:  # nouns and everything else
                 lemmatized_wtxts.append(self.eng_lemmatizer.lemmatize(wtxt))
+
+        # replace each word that changed with "original_lemma"
+        for i, (wtxt, lemmatized_wtxt) in enumerate(zip(verse, lemmatized_wtxts)):
+            if wtxt != lemmatized_wtxt:
+                lemmatized_wtxts[i] = f'{wtxt}_{lemmatized_wtxt}'
+
         return lemmatized_wtxts
 
     def _tokenize_verses(self):
@@ -378,14 +399,14 @@ class DictionaryCreator(ABC):
                     self.words_by_text_by_lang[lang][wtxt] = Word(wtxt, lang, set(), 1)
 
     def _combine_alignments(self):
-        # combine verses from two different bibles into a single file for wtxt aligner (fast_align)
+        # combine verses from two different bibles into a single file for wtxt aligner (Eflomal)
         for bid_1 in self.bids:
             for bid_2 in self.bids:
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
 
-                aligned_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_diag.align'
+                aligned_bibles_file_path = f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_eflomal_diag.align'
                 if os.path.isfile(aligned_bibles_file_path):
                     print(f'Skipped: Aligned bibles file {aligned_bibles_file_path} already exists')
                     continue
@@ -409,11 +430,11 @@ class DictionaryCreator(ABC):
                     ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer,
                      self.aligned_bibles_path],
                     capture_output=True, text=True)
-                # retrieve the final entropy and perplexity
-                matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
-                cross_entropy = float(matches.group(2))
-                perplexity = float(matches.group(3))
-                print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
+                ## retrieve the final entropy and perplexity
+                # matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
+                # cross_entropy = float(matches.group(2))
+                # perplexity = float(matches.group(3))
+                # print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
 
     def _check_already_done(self, target_progress, load):
         if load:
@@ -514,7 +535,7 @@ class DictionaryCreator(ABC):
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
                     # map every pair of different bibles plus the source bible to the source bible
                     continue
-                with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_diag.align',
+                with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_eflomal_diag.align',
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
@@ -692,7 +713,7 @@ class DictionaryCreator(ABC):
         :param target_lang: The language that should be evaluated.
         :return: A dataframe with the source and target wtxts.
         """
-        if target_lang in ('urd'):
+        if target_lang in ('urd', 'gej'):
             print(f'Cannot compute MRR for {target_lang} because no ground truth data is available.')
             return None
         elif target_lang in ('tpi', 'swp'):  # , 'meu')
@@ -746,9 +767,9 @@ class DictionaryCreator(ABC):
             if print_reciprocal_ranks:
                 print(qid)
                 print('\t' + str(self.question_by_qid_by_lang[self.source_lang][qid]))
-                print('\t found (positive) words:' + str(wtxt_list))
-                print('\t reference (true) words:' + str(target_wtxts))
-                print('\t reciprocal rank:       ' + str(f'{reciprocal_rank:.2f}\n'))
+                print('\t found (positive) words: ' + str(wtxt_list))
+                print('\t reference (true) words: ' + str(target_wtxts))
+                print('\t reciprocal rank:        ' + str(f'{reciprocal_rank:.2f}\n'))
             mean_reciprocal_rank += reciprocal_rank
         mean_reciprocal_rank /= len(target_qids)
         self._print_and_write_metric('MRR', mean_reciprocal_rank,
