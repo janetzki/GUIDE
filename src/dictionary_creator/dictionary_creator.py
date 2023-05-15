@@ -356,10 +356,11 @@ class DictionaryCreator(ABC):
             else:  # nouns and everything else
                 lemmatized_wtxts.append(self.eng_lemmatizer.lemmatize(wtxt))
 
-        # replace each word that changed with "original_lemma"
-        for i, (wtxt, lemmatized_wtxt) in enumerate(zip(verse, lemmatized_wtxts)):
-            if wtxt != lemmatized_wtxt:
-                lemmatized_wtxts[i] = f'{wtxt}_{lemmatized_wtxt}'
+        ## formerly needed by SemanticDomainIdentifier
+        ## replace each word that changed with "original_lemma"
+        # for i, (wtxt, lemmatized_wtxt) in enumerate(zip(verse, lemmatized_wtxts)):
+        #     if wtxt != lemmatized_wtxt:
+        #         lemmatized_wtxts[i] = f'{wtxt}_{lemmatized_wtxt}'
 
         return lemmatized_wtxts
 

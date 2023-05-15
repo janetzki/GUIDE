@@ -1,5 +1,7 @@
 from unittest import TestCase
 
+import pandas as pd
+
 from src.dictionary_creator.tfidf_dictionary_creator import TfidfDictionaryCreator
 from src.semantic_domain_identifier import SemanticDomainIdentifier
 
@@ -33,7 +35,7 @@ class TestSemanticDomainIdentifier(TestCase):
 
     def test_identify_semantic_domains(self):
         qids = self.sdi.identify_semantic_domains(self.phrases)
-        self.assertTrue(type(qids) == list)
+        self.assertTrue(type(qids) == pd.DataFrame)
 
     def test_identify_semantic_domains_not_empty(self):
         qids = self.sdi.identify_semantic_domains(self.phrases)

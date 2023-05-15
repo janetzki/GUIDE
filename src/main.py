@@ -12,10 +12,10 @@ if __name__ == '__main__':  # pragma: no cover
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     os.chdir(project_root)
 
-    # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
+    dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-tpi', 'bid-meu'], score_threshold=0.2)
-    dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-gej'], score_threshold=0.2)
-    dc.create_dictionary(load=True, save=True, plot_wtxt='water', min_count=4, print_reciprocal_ranks=True,
+    #dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-gej'], score_threshold=0.2)
+    dc.create_dictionary(load=True, save=True, plot_wtxt='drink', min_count=1, print_reciprocal_ranks=True,
                          plot_subgraph=True)
     dc._save_state()
     # dc.print_lemma_groups()

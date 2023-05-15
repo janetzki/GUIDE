@@ -1,3 +1,5 @@
+import time
+
 import os
 
 import networkx as nx
@@ -48,6 +50,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['eng']
 
+        time.sleep(1)
         self.dc = self._create_dictionary_creator()
 
         self.dc.evaluation_results_by_lang = {
@@ -77,7 +80,8 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     def test__load_state_with_broken_file(self):
         # create directory
-        directory = os.path.join(self.dc.state_files_base_path, str(int(self.dc.start_timestamp) - 1))
+        directory = self.dc.start_timestamp + ' ' + ' '.join(self.dc.bids)
+        directory = os.path.join(self.dc.state_files_base_path, directory)
         os.makedirs(directory)
 
         # create a broken dill file
