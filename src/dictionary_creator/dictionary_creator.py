@@ -1,18 +1,18 @@
+from collections import defaultdict
+
+import dill
 import os
+import pandas as pd
 import re
 import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from datetime import datetime
-from pickle import UnpicklingError
-
-import dill
-import pandas as pd
 from nltk import WordNetLemmatizer, pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus.reader.wordnet import WordNetError
+from pickle import UnpicklingError
 from polyglot.text import Text
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
@@ -413,7 +413,7 @@ class DictionaryCreator(ABC):
                 matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
                 cross_entropy = float(matches.group(2))
                 perplexity = float(matches.group(3))
-                print(f'cross entropy: {cross_entropy}, perplexity: {perplexity}')
+                print(f'cross entropy: {str(cross_entropy)}, perplexity: {str(perplexity)}')
 
     def _check_already_done(self, target_progress, load):
         if load:
@@ -454,8 +454,9 @@ class DictionaryCreator(ABC):
     def _preprocess_data(self):
         self._load_data()
         self._build_sds()
-        self._tokenize_verses()
-        self._combine_alignments()
+
+    #        self._tokenize_verses()
+    #        self._combine_alignments()
 
     def _add_bidirectional_edge(self, word_1, word_2, count=1):
         word_1.add_aligned_word(word_2, count)

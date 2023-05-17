@@ -1,13 +1,13 @@
 from collections import defaultdict, Counter
 
-import numpy as np
-from tqdm import tqdm
-import pandas as pd
-from dictionary_creator.link_prediction_dictionary_creator import LinkPredictionDictionaryCreator
-from semantic_domain_identifier import SemanticDomainIdentifier
 import dill
-from nltk.metrics.distance import edit_distance
 import gensim.downloader as api
+import numpy as np
+import pandas as pd
+from nltk.metrics.distance import edit_distance
+from tqdm import tqdm
+
+from dictionary_creator.link_prediction_dictionary_creator import LinkPredictionDictionaryCreator
 
 
 def correlate_domains(lexical_domains, sdi):
@@ -97,33 +97,21 @@ def compute_word_vector_distance(string1, string2, word_vectors):
     return np.linalg.norm(vector1 - vector2)
 
 
-def correlate_domain_names(dc):
-    # load results
-    # with open('data/2_sd_labeling/correlated_lds_by_cid.pkl', 'rb') as f:
-    #     correlated_lds_by_cid = dill.load(f)
-    # with open('data/2_sd_labeling/correlated_cids_by_ld.pkl', 'rb') as f:
-    #     correlated_cids_by_ld = dill.load(f)
-    with open('data/2_sd_labeling/correlation_scores_by_ld_by_cid.pkl', 'rb') as f:
-        correlation_scores_by_ld_by_cid = dill.load(f)
-
-    # load names for CIDs from dc
-    sd_name_by_cid = {}
-    sd_df = dc.sds_by_lang['eng']
-    for cid in correlation_scores_by_ld_by_cid.keys():
-        sd_name_by_cid[cid] = list(sd_df[sd_df['cid'] == cid]['category'])[0]
-
-    # add SD names to correlation_scores_by_ld_by_cid keys
-    correlation_scores_by_ld_by_sd = defaultdict(dict)
-    for cid, lds in correlation_scores_by_ld_by_cid.items():
-        for ld, score in lds:
-            correlation_scores_by_ld_by_sd[cid + ' ' + sd_name_by_cid[cid]][ld] = score
-
-    # compute edit distance between sd names and ld names
+def compute_edit_distances_between_sd_names_and_ld_names(sds_and_lds_df):
     edit_distances = defaultdict(dict)
-    for sd_name, lds in correlation_scores_by_ld_by_sd.items():
-        for ld, score in lds.items():
-            pure_sd_name = ' '.join(sd_name.split(' ')[1:])
-            edit_distances[sd_name][ld] = edit_distance(pure_sd_name, ld) / max(len(pure_sd_name), len(ld))
+    for idx, row in sds_and_lds_df.iterrows():
+        try:
+            sd_name = row['semantic domain name'].lower()
+            ld = row['lexical domain name'].lower()
+            pure_sd_name = sd_name  # ' '.join(sd_name.split(' ')[1:])
+            dist = edit_distance(pure_sd_name, ld) / max(len(pure_sd_name), len(ld))
+            sds_and_lds_df.loc[idx, 'edit distance'] = dist
+            edit_distances[sd_name][ld] = dist
+        except:
+            print('Error: ' + str(row))
+
+    # save sd_ld_mapping to csv file
+    sds_and_lds_df.to_csv('data/2_sd_labeling/sd_ld_mapping.csv', index=False)
 
     # sort edit_distances by edit distance
     for sd_name, lds in edit_distances.items():
@@ -147,16 +135,26 @@ def correlate_domain_names(dc):
                 f.write('\t' + ld + '\t' + str(score) + '\n')
             f.write('\n')
 
-    # compute distances between SDs and LDs with word vectors
+
+def compute_word_vector_distances_between_sd_names_and_ld_names(sds_and_lds_df):
     # load word vectors
     word_vectors = api.load('word2vec-google-news-300')
 
     # compute distances
     distances = defaultdict(dict)
-    for sd_name, lds in correlation_scores_by_ld_by_sd.items():
-        for ld, score in lds.items():
-            pure_sd_name = ' '.join(sd_name.split(' ')[1:])
-            distances[sd_name][ld] = compute_word_vector_distance(pure_sd_name, ld, word_vectors)
+    for idx, row in sds_and_lds_df.iterrows():
+        try:
+            sd_name = row['semantic domain name'].lower()
+            ld = row['lexical domain name'].lower()
+            pure_sd_name = sd_name  # ' '.join(sd_name.split(' ')[1:])
+            dist = compute_word_vector_distance(pure_sd_name, ld, word_vectors)
+            sds_and_lds_df.loc[idx, 'word vector distance'] = dist
+            distances[sd_name][ld] = dist
+        except:
+            print('Error: ' + str(row))
+
+    # save sd_ld_mapping to csv file
+    sds_and_lds_df.to_csv('data/2_sd_labeling/sd_ld_mapping.csv', index=False)
 
     # filter out lds with distance > 2
     for sd_name, lds in distances.items():
@@ -181,9 +179,38 @@ def correlate_domain_names(dc):
             f.write('\n')
 
 
-def load_sd_ld_mapping(code_by_ld):
+def correlate_domain_names(dc):
+    # load results
+    # with open('data/2_sd_labeling/correlated_lds_by_cid.pkl', 'rb') as f:
+    #     correlated_lds_by_cid = dill.load(f)
+    # with open('data/2_sd_labeling/correlated_cids_by_ld.pkl', 'rb') as f:
+    #     correlated_cids_by_ld = dill.load(f)
+    with open('data/2_sd_labeling/correlation_scores_by_ld_by_cid.pkl', 'rb') as f:
+        correlation_scores_by_ld_by_cid = dill.load(f)
+
+    # load names for CIDs from dc
+    sd_name_by_cid = {}
+    sd_df = dc.sds_by_lang['eng']
+    for cid in correlation_scores_by_ld_by_cid.keys():
+        sd_name_by_cid[cid] = list(sd_df[sd_df['cid'] == cid]['category'])[0]
+
+    # add SD names to correlation_scores_by_ld_by_cid keys
+    correlation_scores_by_ld_by_sd = defaultdict(dict)
+    for cid, lds in correlation_scores_by_ld_by_cid.items():
+        for ld, score in lds:
+            correlation_scores_by_ld_by_sd[cid + ' ' + sd_name_by_cid[cid]][ld] = score
+
+    compute_edit_distances_between_sd_names_and_ld_names(correlation_scores_by_ld_by_sd)
+    compute_word_vector_distances_between_sd_names_and_ld_names(correlation_scores_by_ld_by_sd)
+
+
+def load_sd_ld_mapping(dc, code_by_ld):
     # load sd_ld_mapping.xlsx
     sd_ld_mapping = pd.read_excel('data/2_sd_labeling/sd_ld_mapping.xlsx', engine='openpyxl')
+
+    # add_missing_sd_codes(dc, sd_ld_mapping)
+    # compute_edit_distances_between_sd_names_and_ld_names(sd_ld_mapping)
+    compute_word_vector_distances_between_sd_names_and_ld_names(sd_ld_mapping)
 
     # add code column
     sd_ld_mapping['lexical domain code'] = sd_ld_mapping['lexical domain name'].apply(lambda x: code_by_ld.loc[x])
@@ -247,8 +274,12 @@ def add_missing_sd_codes(dc, sd_ld_mapping):
     # sd_df[sd_df['category'] == sd_ld_mapping['semantic domain name']]['cid']
     for index, row in sd_ld_mapping.iterrows():
         if type(row['semantic domain name']) == str:
-            sd_ld_mapping.loc[index, 'semantic domain code'] = sd_df[sd_df['category'] == row['semantic domain name']][
-                'cid'].values[0]
+            try:
+                sd_ld_mapping.loc[index, 'semantic domain code'] = \
+                    sd_df[sd_df['category'] == row['semantic domain name']][
+                        'cid'].values[0]
+            except:
+                print('Error: ' + row['semantic domain name'])
 
 
 def correlate_sds_and_lds_by_words(sd_dataframe, words_by_domain, code_by_ld):
@@ -285,7 +316,6 @@ def correlate_sds_and_lds_by_words(sd_dataframe, words_by_domain, code_by_ld):
                                                'lexical domain code',
                                                'overlap'])])
 
-
     sd_ld_mapping.to_csv('data/2_sd_labeling/sd_ld_mapping.csv', index=False)
 
 
@@ -298,7 +328,7 @@ if __name__ == '__main__':
     dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     dc._preprocess_data()
 
-    sdi = SemanticDomainIdentifier(dc)
+    # sdi = SemanticDomainIdentifier(dc)
 
     # correlate_domain_names(dc)
 
@@ -320,7 +350,7 @@ if __name__ == '__main__':
     code_by_domain = code_by_domain.set_index('domains')
     code_by_domain = code_by_domain.rename(columns={'domain_codes': 'domain_code'})
     code_by_domain = code_by_domain.sort_values(by=['domain_code'], ascending=True)
-    # load_sd_ld_mapping(code_by_domain)
+    load_sd_ld_mapping(dc, code_by_domain)
 
     # filter all lines that contain the word "moon"
     moon_lines = domains[domains['english'] == 'moon']
@@ -337,7 +367,7 @@ if __name__ == '__main__':
     print(words_by_domain)
 
     # Count distinct domains
-    print(domains['domains'].nunique())  # 1020 (OT + NT), 669 (NT)
+    print(domains['domains'].nunique())  # 1019 (OT + NT), 668 (NT) (not counting empty domain: '')
 
     # correlate_domains(domains, sdi)
 
