@@ -9,157 +9,41 @@ from my_utils.earlystopping import EarlyStopping
 sys.path.insert(0, '../')
 import importlib, gc
 import my_utils.alignment_features as afeatures
-
-# from my_utils.pytorch_utils import EarlyStopping
+import wandb
 
 importlib.reload(afeatures)
-# import gnn_utils.graph_utils as gutils
-
 from tqdm import tqdm
-
 import torch.nn as nn
-import torch.nn.functional as F
 import torch_geometric.nn as pyg_nn
-
 import time
 from datetime import datetime
-
 import torch
-
-dev = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
-dev2 = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
-
-import gensim.downloader as api
 from my_utils import utils
+from gnn_ap.encoder import Encoder, POSDecoder, POSDecoderTransformer, dev, dev2
+import collections
+import codecs
+import postag_utils as posutil
+from torch.utils.data import Dataset, DataLoader
+import random
 
-# %%
+learning_rate = 0.00001  # increase
+epochs = 1  # increase
+batch_size = 2  # increase?
+threshold = 0.95  # for self-learning
 
-print("Loading word2vec model")
-## w2v_model = Word2Vec.load("/mounts/work/ayyoob/models/w2v/word2vec_POS_small_final_langs_10e.model")
-w2v_model = api.load('glove-twitter-25')
-
-WORDEMBEDDING = False
-
-
-class Encoder(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, features, n_head=2, has_tagfreq_feature=False, ):
-        super(Encoder, self).__init__()
-        self.conv1 = pyg_nn.GATConv(in_channels, 2 * out_channels, heads=n_head)
-        self.conv2 = pyg_nn.GATConv(2 * n_head * out_channels, out_channels, heads=n_head)
-        # self.fin_lin = nn.Linear(out_channels, out_channels)
-
-        if has_tagfreq_feature:
-            if WORDEMBEDDING:
-                self.feature_encoder = afeatures.FeatureEncoding(features, [normalized_tag_frequencies, word_vectors],
-                                                                 dev)
-            else:
-                self.feature_encoder = afeatures.FeatureEncoding(features, [normalized_tag_frequencies], dev)
-            # self.feature_encoder = afeatures.FeatureEncoding(features, [normalized_tag_frequencies,train_pos_labels, word_vectors])
-        else:
-            if WORDEMBEDDING:
-                self.feature_encoder = afeatures.FeatureEncoding(features, [word_vectors], dev)
-            else:
-                self.feature_encoder = afeatures.FeatureEncoding(features, [], dev)
-            # self.feature_encoder = afeatures.FeatureEncoding(features, [])
-            # self.feature_encoder = afeatures.FeatureEncoding(features, [train_pos_labels, word_vectors])
-
-    def forward(self, x, edge_index):
-        encoded = self.feature_encoder(x,
-                                       dev)  # 10 x 14 = #nodes (in one verse and all langs) x #features ; batch_size = 1
-        # 47 x 7419 = #nodes (in one verse and all langs) x #QIDs?!
-        # 28 x 15 = #nodes (in one verse and all langs) x ??
-
-        x = F.elu(self.conv1(encoded,
-                             edge_index, ))  # 10x167 x 2x10 (#nodes x (encoded features) x #SDs x #nodes) # 242x2048 = features.sum() x hidden_size?  # 167 != 242!
-        x = F.elu(self.conv2(x, edge_index))
-        # return F.relu(self.fin_lin(x)), encoded
-        return x, encoded
-
-
-model = None
-XLMR = False
-POSTAG = True
+wandb.init(project="GNN annotation projection")
+wandb.config = {
+    "learning_rate": learning_rate,
+    "epochs": epochs,
+    "batch_size": batch_size,
+    "self_learning_threshold": threshold
+}
 
 
 def clean_memory():
     gc.collect()
     with torch.no_grad():
         torch.cuda.empty_cache()
-
-
-class POSDecoder(nn.Module):
-    def __init__(self, input_size, hidden_size, n_class, skip_connection, drop_out=0):
-        super(POSDecoder, self).__init__()
-        self.skip_connection = skip_connection
-        self.transfer = nn.Sequential(nn.Linear(input_size, hidden_size), nn.ReLU(), nn.Dropout(drop_out),
-                                      nn.Linear(hidden_size, hidden_size), nn.ReLU(), nn.Dropout(drop_out),
-                                      nn.Linear(hidden_size, n_class))
-
-    def forward(self, z, index, batch_=None):
-        h = z[index, :]
-
-        x = batch_['encoded'][index, :]
-        if self.skip_connection:
-            h = torch.cat((h, x), dim=1)
-
-        res = self.transfer(h)
-
-        return res
-
-
-class POSDecoderTransformer(nn.Module):
-    def __init__(self, input_size, hidden_size, n_class, residual_connection, sequence_size, drop_out=0):
-        super(POSDecoderTransformer, self).__init__()
-        self.sequence_size = sequence_size
-        self.residual_connection = residual_connection
-
-        # for skip connection:
-        self.input_size = input_size
-        n_head = int(input_size / 64)
-        if n_head * 64 != input_size:
-            n_head += 1
-            self.input_size = n_head * 64
-
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=self.input_size, nhead=int(self.input_size / 64),
-                                                        dim_feedforward=hidden_size)
-        self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=4)
-
-        self.transfer = nn.Sequential(nn.Linear(self.input_size, self.input_size * 2), nn.ReLU(), nn.Dropout(drop_out),
-                                      # TODO check what happens if I remove this.
-                                      nn.Linear(self.input_size * 2, n_class))
-
-    def forward(self, z_, index, batch_):
-        z = z_.to(dev2)
-
-        x = F.pad(batch_['encoded'], (0, self.input_size - z.size(1) - batch_['encoded'].size(1))).to(dev2)
-
-        language_based_nodes = batch_['lang_based_nodes']  # determines which node belongs to which language
-        transformer_indices = batch_['transformer_indices']  # the reverse of the prev structure
-
-        sentences = []
-        for lang_nodes in language_based_nodes:  # we rearrange the nodes into sentences of each language
-            if self.residual_connection:
-                tensor = torch.cat((z[lang_nodes, :], x[lang_nodes, :]), dim=1)
-            else:
-                tensor = z[lang_nodes, :]
-
-            try:
-                tensor = F.pad(tensor, (0, 0, 0, self.sequence_size - tensor.size(0)))
-            except Exception as e:
-                print(self.sequence_size, tensor.size(0))
-            sentences.append(tensor)
-
-        batch = torch.stack(sentences)  # A batch contains all translations of one sentence in all training languages.
-        batch = torch.transpose(batch, 0, 1)
-
-        h = self.transformer(batch)
-        h = torch.transpose(h, 0, 1)
-        h = h[transformer_indices[0], transformer_indices[1],
-            :]  # rearrange the nodes back to the order in which we recieved (the order that represents the graph)
-
-        res = self.transfer(h)
-
-        return res.to(dev)
 
 
 def save_model(model, name):
@@ -175,15 +59,8 @@ def save_model(model, name):
     # model.encoder.feature_encoder.feature_types[9] = afeatures.MappingFeature(100, 'word')
     # model.encoder.feature_encoder.feature_types[10] = afeatures.MappingFeature(len(postag_map), 'tag_priors', freeze=True)
 
-    # works in DEBUG mode
-    torch.save(model,
-               f'../external_repos/GNN-POSTAG/dataset/gdfa_final/gnn/checkpoint/postagging/POSTAG_{name}_' + '.pickle')
-
-
-import collections
-
-verse_accuracy_buckets = collections.defaultdict(list)
-verse_accuracies = {}
+    torch.save(model.state_dict(),
+               f'../external_repos/GNN-POSTAG/dataset/gdfa_final/models/gnn/checkpoint/postagging/{name}.pickle')
 
 
 def add_accuracy_to_bucket(accuracy, verse):
@@ -195,8 +72,11 @@ def add_accuracy_to_bucket(accuracy, verse):
     verse_accuracy_buckets[bucket].append(verse)
 
 
-def test(epoch, testloader, mask_language):
-    print('testing', epoch)
+def test(epoch, testloader, mask_language, is_valiation):
+    if is_valiation:
+        print('validating', epoch)
+    else:
+        print('testing', epoch)
     model.eval()
     total = 0
     correct = 0
@@ -225,23 +105,26 @@ def test(epoch, testloader, mask_language):
 
                 max_probs, predicted = torch.max(torch.softmax(preds, dim=1), 1)
 
-                if len(labels) == 1:
-                    print(f'WARNING: only one label: {labels} ==> skipping to avoid crash')
-                    # print key of value labels[0] in postag_map.values()
-                    print([k for k, v in postag_map.items() if v == labels[0]])
-                    continue
                 loss = criterion(preds, labels)
                 probability_sum += torch.sum(max_probs)
                 probability_count += max_probs.size(0)
-                # total_loss += loss
+                total_loss += loss
 
             verse_correct = (predicted == labels).sum().item()
-            total += labels.size(0)
+            total += labels.size(0)  # [k for k, v in postag_map.items() if v in (7086, 2525, 2516, 7407)]
             correct += verse_correct
             verse_accuracy = verse_correct / (labels.size(0) + 0.00001)
             add_accuracy_to_bucket(verse_accuracy, verse)
+
+    if is_valiation:
+        prefix = 'val'
+    else:
+        prefix = 'test'
+    wandb.log({"total": total, f"{prefix} total loss": total_loss, f"{prefix} ACC": correct / total,
+               f"{prefix} confidence": probability_sum / probability_count})
+    wandb.watch(model)
     print(
-        f'test, epoch: {epoch}, total:{total} ACC: {correct / total}, loss: {total_loss}, confidence: {probability_sum / probability_count}')
+        f'{prefix}, epoch: {epoch}, total:{total}, ACC: {correct / total}, loss: {total_loss}, confidence: {probability_sum / probability_count}')
     clean_memory()
     return 1.0 - correct / total
 
@@ -254,7 +137,7 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
 
     if WORDEMBEDDING:
         features = train_dataset.features[:]
-        features[-1].out_dim = w2v_model_filtered.vector_size
+        features[-1].out_dim = 1  # w2v_model_filtered.vector_size
     else:
         features = train_dataset.features[:-1]
 
@@ -272,8 +155,8 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
 
     train_gnn_dataset.set_transformer(use_transformers)
     test_gnn_dataset.set_transformer(use_transformers)
-    train_data_loader = DataLoader(train_gnn_dataset, batch_size=1, shuffle=True)
-    test_data_loader = DataLoader(test_gnn_dataset, batch_size=1, shuffle=False)
+    train_data_loader = DataLoader(train_gnn_dataset, batch_size=batch_size, shuffle=True)
+    test_data_loader = DataLoader(test_gnn_dataset, batch_size=batch_size, shuffle=False)
 
     clean_memory()
     drop_out = 0
@@ -298,20 +181,22 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
     else:
         decoder = POSDecoder(decoder_in_dim, decoder_in_dim * 2, len(postag_map), residual_connection)
 
-    model = pyg_nn.GAE(Encoder(in_dim, channels, features, n_head, has_tagfreq_feature=tag_frequencies), decoder).to(
+    model = pyg_nn.GAE(
+        Encoder(in_dim, channels, features, n_head, tag_frequencies, normalized_tag_frequencies, None),  # word_vectors
+        decoder).to(
         dev)
 
     if use_transformers:
         decoder.to(dev2)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.00001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
     torch.set_printoptions(edgeitems=10)
     print("model params - decoder params - conv1", sum(p.numel() for p in model.parameters()),
           sum(p.numel() for p in decoder.parameters()))
 
     # model.load_state_dict(torch.load(f'/mounts/work/ayyoob/models/gnn/checkpoint/postagging/check_point_{start_time}.pt'))
-    for epoch in range(1, 2):
+    for epoch in range(1, epochs + 1):
         print(f"\n----------------epoch {epoch} ---------------")
 
         train(epoch, train_data_loader, mask_language, test_data_loader)
@@ -320,11 +205,11 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
             model.load_state_dict(
                 torch.load(f'/mounts/work/ayyoob/models/gnn/checkpoint/postagging/check_point_{start_time}.pt'))
 
-        model_name = f'{len(pos_lang_list)}lngs-POSFeat{tag_frequencies}alltgts_trnsfrmr{use_transformers}6LRes{residual_connection}_trainWE{train_word_embedding}_mskLng{mask_language}_E{epoch}_{params}_{start_time}_ElyStpDlta{delta}-GA-chnls{channels}'
+        model_name = 'model-3'  # 2: ACC: 0.08 # f'{len(pos_lang_list)}lngs-POSFeat{tag_frequencies}alltgts_trnsfrmr{use_transformers}6LRes{residual_connection}_trainWE{train_word_embedding}_mskLng{mask_language}_E{epoch}_{params}_{start_time}_ElyStpDlta{delta}-GA-chnls{channels}'
         model.model_name = model_name
         print('model name', model_name)
         save_model(model, model_name)
-        test(epoch, test_data_loader, mask_language)
+        test(epoch, test_data_loader, mask_language, True)
         # test_mostfreq(yor_data_loader, True, yor_gold_mostfreq_tag, yor_gold_mostfreq_index, (.shape[0], len(postag_map)))
         # test_mostfreq(tam_data_loader, True, tam_gold_mostfreq_tag, tam_gold_mostfreq_index, (w2v_model_filtered.wv.vectors.shape[0], len(postag_map)))
         # test_mostfreq(arb_data_loader, True, arb_gold_mostfreq_tag, arb_gold_mostfreq_index, (w2v_model_filtered.wv.vectors.shape[0], len(postag_map)))
@@ -367,7 +252,7 @@ def train(epoch, data_loader, mask_language, test_data_loader, max_batches=99999
         if i % 1000 == 999:
             # print(f"loss: {total_loss}")
             total_loss = 0
-            val_loss = test(epoch, test_data_loader, mask_language)
+            val_loss = test(epoch, test_data_loader, mask_language, True)
             # test_mostfreq(yor_data_loader, True, yor_gold_mostfreq_tag, yor_gold_mostfreq_index, (w2v_model_filtered.wv.vectors.shape[0], len(postag_map)))
             # test_mostfreq(tam_data_loader, True, tam_gold_mostfreq_tag, tam_gold_mostfreq_index, (w2v_model_filtered.wv.vectors.shape[0], len(postag_map)))
             # test_mostfreq(arb_data_loader, True, arb_gold_mostfreq_tag, arb_gold_mostfreq_index, (w2v_model_filtered.wv.vectors.shape[0], len(postag_map)))
@@ -386,25 +271,7 @@ def train(epoch, data_loader, mask_language, test_data_loader, max_batches=99999
             break
 
     print(f"total train loss: {total_loss}")
-
-
-from torch.utils.data import Dataset, DataLoader
-import random
-
-utils.graph_dataset_path = '../external_repos/GNN-POSTAG/dataset/gdfa_final/'
-train_dataset = torch.load(utils.graph_dataset_path + f'dataset_forpos1_word.torch.bin')
-
-new_testament_verses = []
-old_testament_verses = []
-testaments = 'all'
-
-starts = set()
-for verse in train_dataset.accepted_verses:
-    starts.add(verse[0])
-    if verse[0] in ['4', '5', '6']:
-        new_testament_verses.append(verse)
-    else:
-        old_testament_verses.append(verse)
+    wandb.log({"total train loss": total_loss})
 
 
 class POSTAGGNNDataset(Dataset):
@@ -503,28 +370,6 @@ class POSTAGGNNDataset(Dataset):
                 'transformer_indices': transformer_indices}
 
 
-langs = ['eng', 'fra']
-editions = {'eng': 'eng-x-bible-web', 'fra': 'fra-x-bible-fob'}  # listsmall3.txt
-# editions = {'eng': 'bid-eng-DBY-1000', 'fra': 'bid-fra-fob-1000'} # listsmall4.txt
-# editions = {'eng': 'bid-eng-web', 'fra': 'bid-fra-fob'}           # listsmall5.txt
-
-current_editions = []
-for lang in langs:
-    if editions[lang] not in current_editions:
-        current_editions.append(editions[lang])
-
-
-def create_me_a_gnn_dataset(node_covers, labels, group_size=100, editions=current_editions,
-                            verses=train_dataset.accepted_verses):
-    train_ds = POSTAGGNNDataset(train_dataset, verses, editions, {}, node_covers[0], labels[0],
-                                utils.graph_dataset_path + '/', group_size=group_size)
-
-    return train_ds
-
-
-import collections
-
-
 def create_structures(dataset, all_tags):
     pos_labels = {}
     pos_node_cover = collections.defaultdict(list)
@@ -540,21 +385,6 @@ def create_structures(dataset, all_tags):
                 pos_labels[sent_id][dataset.nodes_map[lang][sent_id][w_i], sent_tags[w_i]] = 1
                 pos_node_cover[sent_id].append(dataset.nodes_map[lang][sent_id][w_i])
     return pos_labels, pos_node_cover
-
-
-import codecs
-
-sds_df = pd.read_csv('../semdom extractor/output/semdom_qa_clean_eng.csv')
-# Add column qid = f'{cid} {question_index}'
-sds_df['qid'] = sds_df.apply(lambda row: f"{row['cid']} {row['question_index']}", axis=1)
-# Ignore all QIDs that start with '9'
-sds_df = sds_df[~sds_df['qid'].str.startswith('9')]
-# map all qids to their sds_df.index
-postag_map = dict(zip(sds_df['qid'], sds_df.index + 1))
-# postag_map = {'3.5.7.2 1': 1, '3.5.1.2.9 2': 2, '4.1.9.1 3': 3, '4.9.7.2 1': 4, '4.1.9.1.4 1': 5}
-postag_map = {'Moon': 1, 'Star': 2, 'X': 0, 'None': 0}
-postag_map['X'] = 0
-criterion = nn.CrossEntropyLoss(ignore_index=postag_map['X'])
 
 
 def get_pos_tags(dataset, pos_lang_list):
@@ -629,13 +459,12 @@ def get_data_loadrs_for_target_editions(target_editions, dataset, verses, data_d
     target_pos_labels, target_pos_node_cover = get_language_nodes(dataset, target_editions, verses)
     gnn_dataset_target_pos = POSTAGGNNDataset(dataset, verses, None, {}, target_pos_node_cover, target_pos_labels,
                                               data_dir, group_size=50000, transformer=transformer)
-    target_data_loader = DataLoader(gnn_dataset_target_pos, batch_size=1, shuffle=False)
+    target_data_loader = DataLoader(gnn_dataset_target_pos, batch_size=batch_size, shuffle=False)
 
     return target_data_loader
 
 
 class DataEncoder():
-
     def __init__(self, data_loader, model, mask_language, dotqdm=True):
         self.data_loader = data_loader
         self.model = model
@@ -670,24 +499,6 @@ class DataEncoder():
             yield z, verse, i, batch
 
 
-import postag_utils as posutil
-
-shuffled_verses = train_dataset.accepted_verses[:]
-random.shuffle(shuffled_verses)
-
-pos_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
-pos_val_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
-pos_test_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
-# pos_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
-# pos_val_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
-# pos_test_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
-# pos_lang_list = ['bid-eng-web', 'bid-fra-fob']
-# pos_val_lang_list = ['bid-eng-web', 'bid-fra-fob']
-# pos_test_lang_list = ['bid-eng-web', 'bid-fra-fob']
-train_pos_labels, train_pos_node_cover, all_tokens = get_pos_tags(train_dataset, pos_lang_list)
-val_pos_labels, val_pos_node_cover, _ = get_pos_tags(train_dataset, pos_val_lang_list)
-
-
 def filter_w2v_model(w2v_model, all_tokens, lang):
     # create a filtered version of w2v_model that only contains the tokens in all_tokens['eng']
     w2v_model_filtered = gensim.models.KeyedVectors(vector_size=w2v_model.vector_size)
@@ -703,98 +514,178 @@ def filter_w2v_model(w2v_model, all_tokens, lang):
     return w2v_model_filtered
 
 
-w2v_model_filtered = filter_w2v_model(w2v_model, all_tokens, pos_lang_list[0])
-word_vectors = w2v_model_filtered.vectors
-w2v_model = None  # clean memory
+if __name__ == "__main__":
+    # print("Loading word2vec model")
+    ## w2v_model = Word2Vec.load("/mounts/work/ayyoob/models/w2v/word2vec_POS_small_final_langs_10e.model")
+    # w2v_model = api.load('glove-twitter-25')
 
-target_editions = []
-for edition in current_editions:
-    if edition not in pos_lang_list:  # and (edition in pos_val_lang_list or edition in pos_test_lang_list):
-        target_editions.append(edition)
+    WORDEMBEDDING = False
+    model = None
+    XLMR = False
+    POSTAG = True
 
-target_data_loader_train = get_data_loadrs_for_target_editions(target_editions, train_dataset,
-                                                               train_dataset.accepted_verses,
-                                                               utils.graph_dataset_path + '/',
-                                                               transformer=False)
+    verse_accuracy_buckets = collections.defaultdict(list)
+    verse_accuracies = {}
 
-gnn_dataset_train_pos_bigbatch = create_me_a_gnn_dataset([train_pos_node_cover], [train_pos_labels],
-                                                         group_size=2, verses=shuffled_verses[:])
-gnn_dataset_val_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=2,
-                                              verses=shuffled_verses[:3])
-gnn_dataset_test_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=2,
-                                               verses=train_dataset.accepted_verses)
+    utils.graph_dataset_path = '../external_repos/GNN-POSTAG/dataset/gdfa_final/'
+    train_dataset = torch.load(utils.graph_dataset_path + f'dataset_forpos1_word.torch.bin')
 
-train_data_loader_bigbatch = DataLoader(gnn_dataset_train_pos_bigbatch, batch_size=1, shuffle=False)
-val_data_loader_pos = DataLoader(gnn_dataset_val_pos, batch_size=1, shuffle=False)
-test_data_loader_pos = DataLoader(gnn_dataset_test_pos, batch_size=1, shuffle=False)
-threshold = 0.95
-type_check = False
+    new_testament_verses = []
+    old_testament_verses = []
+    testaments = 'all'
 
-# #! Uncomment when data has been updated
-tag_frequencies_source = torch.zeros(w2v_model_filtered.vectors.shape[0],
-                                     len(postag_map))  # tag_frequencies_source = tag_frequencies - tag_frequencies_target # TODO: understand if original code works better
-res_ = posutil.get_tag_frequencies_node_tags(model, [train_pos_node_cover], [train_pos_labels], len(postag_map),
-                                             w2v_model_filtered.vectors.shape[0],
-                                             [target_data_loader_train], [train_data_loader_bigbatch], DataEncoder,
-                                             source_tag_frequencies=tag_frequencies_source,
-                                             target_train_treshold=threshold, type_check=type_check)
+    starts = set()
+    for verse in train_dataset.accepted_verses:
+        starts.add(verse[0])
+        if verse[0] in ['4', '5', '6']:
+            new_testament_verses.append(verse)
+        else:
+            old_testament_verses.append(verse)
 
-print('saving at',
-      f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
-torch.save(res_,
-           f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
-# #!  end
+    # langs = ['eng', 'fra']
+    langs = ['eng1', 'eng2']
+    # editions = {'eng': 'eng-x-bible-web', 'fra': 'fra-x-bible-fob'}  # listsmall3.txt
+    # editions = {'eng': 'bid-eng-DBY-1000', 'fra': 'bid-fra-fob-1000'} # listsmall4.txt
+    # editions = {'eng': 'bid-eng-web', 'fra': 'bid-fra-fob'}  # listsmall5.txt
+    editions = {'eng1': 'bid-eng-web', 'eng2': 'bid-eng-web'}  # listsmall6.txt
 
-res_ = torch.load(
-    f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
-tag_frequencies, tag_frequencies_target, pos_node_cover_exts, pos_label_exts, tag_based_stats = res_
-train_pos_node_covers_ext, train_pos_labels_ext = pos_node_cover_exts[0], pos_label_exts[0]
+    current_editions = []
+    for lang in langs:
+        if editions[lang] not in current_editions:
+            current_editions.append(editions[lang])
 
-tag_frequencies_source = tag_frequencies - tag_frequencies_target
-word_frequencies_target = torch.sum(tag_frequencies_target.to(torch.device('cpu')), dim=1)
-tag_frequencies = tag_frequencies_source + tag_frequencies_target
-tag_frequencies_copy = tag_frequencies.detach().clone()
 
-tag_frequencies_copy[torch.logical_and(word_frequencies_target > 0.1, word_frequencies_target < 3), :] = 0.0000001
+    def create_me_a_gnn_dataset(node_covers, labels, group_size=100, editions=current_editions,
+                                verses=train_dataset.accepted_verses):
+        train_ds = POSTAGGNNDataset(train_dataset, verses, editions, {}, node_covers[0], labels[0],
+                                    utils.graph_dataset_path + '/', group_size=group_size)
 
-# We have to give uniform noise to some training examples to prevent the model from returning one of the most frequent tags always!!
-uniform_noise = torch.BoolTensor(tag_frequencies.size(0))
-uniform_noise[:] = True
-shuffle_tensor = torch.randperm(tag_frequencies.size(0))[:int(tag_frequencies.size(0) * 0.7)]
-uniform_noise[shuffle_tensor] = False
-tag_frequencies_copy[torch.logical_and(uniform_noise, word_frequencies_target < 0.1), :] = 0.0000001
-sm = torch.sum(tag_frequencies_copy, dim=1)
-normalized_tag_frequencies = (tag_frequencies_copy.transpose(1, 0) / sm).transpose(1, 0)
+        return train_ds
 
-gnn_dataset_val_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=10000,
-                                              verses=shuffled_verses[:1000])
 
-mask_language = True
-params = argparse.Namespace()
+    sds_df = pd.read_csv('../semdom extractor/output/semdom_qa_clean_eng.csv')
+    # Add column qid = f'{cid} {question_index}'
+    sds_df['qid'] = sds_df.apply(lambda row: f"{row['cid']} {row['question_index']}", axis=1)
+    # Ignore all QIDs that start with '9'
+    sds_df = sds_df[~sds_df['qid'].str.startswith('9')]
+    # map all qids to their sds_df.index
+    postag_map = dict(zip(sds_df['qid'], sds_df.index + 1))
+    # postag_map = {'3.5.7.2 1': 1, '3.5.1.2.9 2': 2, '4.1.9.1 3': 3, '4.9.7.2 1': 4, '4.1.9.1.4 1': 5}
+    # postag_map = {'Moon': 1, 'Star': 2, 'Verb': 3, 'Preposition': 4, 'X': 0}
+    postag_map['X'] = 0
+    criterion = nn.CrossEntropyLoss(ignore_index=postag_map['X'])
 
-gnn_dataset_train_pos_ext = create_me_a_gnn_dataset([train_pos_node_covers_ext], [train_pos_labels_ext],
-                                                    group_size=16)
-model_name = create_model(gnn_dataset_train_pos_ext, gnn_dataset_val_pos,
-                          train_word_embedding=False, mask_language=mask_language, use_transformers=True,
-                          tag_frequencies=False, params=f'traintgt{threshold}_Typchck{type_check}_small_NOXLMR',
-                          residual_connection=False)
+    shuffled_verses = train_dataset.accepted_verses[:]
+    random.shuffle(shuffled_verses)
 
-# %%
-m_path = 'POSTAG_2lngs-POSFeatTruealltgts_trnsfrmrTrue6LResFalse_trainWEFalse_mskLngTrue_E1_Namespace()_20230512-113529_ElyStpDlta0-GA-chnls1024_.pickle'
-model = torch.load(f'../external_repos/GNN-POSTAG/dataset/gdfa_final/gnn/checkpoint/postagging/{m_path}',
-                   map_location=torch.device('cpu'))
-model.to(dev)
-model.decoder.to(dev2)
-gnn_dataset_val_pos.set_transformer(True)
-test(0, val_data_loader_pos, True)
+    # pos_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
+    # pos_val_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
+    # pos_test_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
+    # pos_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
+    # pos_val_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
+    # pos_test_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
+    pos_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    pos_val_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    pos_test_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    # pos_lang_list = ['bid-eng-web', 'bid-eng-web']
+    # pos_val_lang_list = ['bid-eng-web', 'bid-eng-web']
+    # pos_test_lang_list = ['bid-eng-web', 'bid-eng-web']
+    train_pos_labels, train_pos_node_cover, all_tokens = get_pos_tags(train_dataset, pos_lang_list)
+    val_pos_labels, val_pos_node_cover, _ = get_pos_tags(train_dataset, pos_val_lang_list)
 
-gnn_dataset_test_pos.set_transformer(False)
-gen_langs = pos_test_lang_list[:]
-gen_langs.extend(pos_val_lang_list)
-for lang in gen_langs:
-    posutil.generate_target_lang_tags_onedataset(model, lang, model.model_name, mask_language,
-                                                 train_dataset, test_data_loader_pos, DataEncoder, postag_map['X'])
+    # w2v_model_filtered = filter_w2v_model(w2v_model, all_tokens, pos_lang_list[0])
+    # word_vectors = w2v_model_filtered.vectors
+    w2v_model = None  # clean memory
 
-model = None
-decoder = None
-clean_memory()
+    target_editions = []
+    for edition in current_editions:
+        if edition not in pos_lang_list:  # and (edition in pos_val_lang_list or edition in pos_test_lang_list):
+            target_editions.append(edition)
+
+    target_data_loader_train = get_data_loadrs_for_target_editions(target_editions, train_dataset,
+                                                                   train_dataset.accepted_verses,
+                                                                   utils.graph_dataset_path + '/',
+                                                                   transformer=False)
+
+    gnn_dataset_train_pos_bigbatch = create_me_a_gnn_dataset([train_pos_node_cover], [train_pos_labels],
+                                                             group_size=2, verses=shuffled_verses[:])
+    gnn_dataset_val_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=2,
+                                                  verses=shuffled_verses[:3])
+    gnn_dataset_test_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=2,
+                                                   verses=train_dataset.accepted_verses)
+
+    train_data_loader_bigbatch = DataLoader(gnn_dataset_train_pos_bigbatch, batch_size=batch_size, shuffle=False)
+    val_data_loader_pos = DataLoader(gnn_dataset_val_pos, batch_size=batch_size, shuffle=False)
+    test_data_loader_pos = DataLoader(gnn_dataset_test_pos, batch_size=batch_size, shuffle=False)
+    type_check = False
+
+    # #! Uncomment when data has been updated
+    tag_frequencies_source = torch.zeros(1,  # w2v_model_filtered.vectors.shape[0],
+                                         len(postag_map))  # tag_frequencies_source = tag_frequencies - tag_frequencies_target # TODO: understand if original code works better
+    res_ = posutil.get_tag_frequencies_node_tags(model, [train_pos_node_cover], [train_pos_labels], len(postag_map),
+                                                 1,  # w2v_model_filtered.vectors.shape[0],
+                                                 [target_data_loader_train], [train_data_loader_bigbatch], DataEncoder,
+                                                 source_tag_frequencies=tag_frequencies_source,
+                                                 target_train_treshold=threshold, type_check=type_check)
+
+    print('saving at',
+          f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
+    torch.save(res_,
+               f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
+    # #!  end
+
+    res_ = torch.load(
+        f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
+    tag_frequencies, tag_frequencies_target, pos_node_cover_exts, pos_label_exts, tag_based_stats = res_
+    train_pos_node_covers_ext, train_pos_labels_ext = pos_node_cover_exts[0], pos_label_exts[0]
+
+    tag_frequencies_source = tag_frequencies - tag_frequencies_target
+    word_frequencies_target = torch.sum(tag_frequencies_target.to(torch.device('cpu')), dim=1)
+    tag_frequencies = tag_frequencies_source + tag_frequencies_target
+    tag_frequencies_copy = tag_frequencies.detach().clone()
+
+    tag_frequencies_copy[torch.logical_and(word_frequencies_target > 0.1, word_frequencies_target < 3), :] = 0.0000001
+
+    # We have to give uniform noise to some training examples to prevent the model from returning one of the most frequent tags always!!
+    uniform_noise = torch.BoolTensor(tag_frequencies.size(0))
+    uniform_noise[:] = True
+    shuffle_tensor = torch.randperm(tag_frequencies.size(0))[:int(tag_frequencies.size(0) * 0.7)]
+    uniform_noise[shuffle_tensor] = False
+    tag_frequencies_copy[torch.logical_and(uniform_noise, word_frequencies_target < 0.1), :] = 0.0000001
+    sm = torch.sum(tag_frequencies_copy, dim=1)
+    normalized_tag_frequencies = (tag_frequencies_copy.transpose(1, 0) / sm).transpose(1, 0)
+
+    gnn_dataset_val_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=10000,
+                                                  verses=shuffled_verses[:1000])
+
+    mask_language = True
+    params = argparse.Namespace()
+
+    gnn_dataset_train_pos_ext = create_me_a_gnn_dataset([train_pos_node_covers_ext], [train_pos_labels_ext],
+                                                        group_size=16)
+    model_name = create_model(gnn_dataset_train_pos_ext, gnn_dataset_val_pos,
+                              train_word_embedding=False, mask_language=mask_language, use_transformers=True,
+                              tag_frequencies=False, params=f'traintgt{threshold}_Typchck{type_check}_small_NOXLMR',
+                              residual_connection=False)
+
+    print('\n\nloading model')
+    m_path = 'model-3'  # 'POSTAG_2lngs-POSFeatTrue  alltgts_trnsfrmrTrue6LResFalse_trainWEFalse_mskLngTrue_E1_  Namespace()_20230512-113529_ElyStpDlta0-GA-chnls1024_.pickle'
+    model.load_state_dict(torch.load(
+        f'../external_repos/GNN-POSTAG/dataset/gdfa_final/models/gnn/checkpoint/postagging/{m_path}.pickle'))  # map_location=torch.device('cpu'))
+    model.eval()
+
+    model.to(dev)
+    model.decoder.to(dev2)
+    gnn_dataset_val_pos.set_transformer(True)
+    test(0, val_data_loader_pos, True, False)
+
+    gnn_dataset_test_pos.set_transformer(False)
+    gen_langs = pos_test_lang_list[:]
+    gen_langs.extend(pos_val_lang_list)
+    for lang in gen_langs:
+        posutil.generate_target_lang_tags_onedataset(model, lang, model.model_name, mask_language,
+                                                     train_dataset, test_data_loader_pos, DataEncoder, postag_map['X'])
+
+    model = None
+    decoder = None
+    clean_memory()
