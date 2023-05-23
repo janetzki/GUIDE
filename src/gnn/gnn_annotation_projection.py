@@ -2,6 +2,7 @@ import argparse
 import sys
 
 import gensim.models.keyedvectors
+import math
 import pandas as pd
 
 from my_utils.earlystopping import EarlyStopping
@@ -26,9 +27,9 @@ import postag_utils as posutil
 from torch.utils.data import Dataset, DataLoader
 import random
 
-learning_rate = 0.00001  # increase
-epochs = 1  # increase
-batch_size = 2  # increase?
+learning_rate = 0.0001  # increase? # 0.00001
+epochs = 100  # increase
+batch_size = 1  # increase? --> crashes because of collate_fn
 threshold = 0.95  # for self-learning
 
 wandb.init(project="GNN annotation projection")
@@ -47,7 +48,8 @@ def clean_memory():
 
 
 def save_model(model, name):
-    model.encoder.feature_encoder.feature_types[0] = afeatures.OneHotFeature(20, 35, 'editf')
+    model.encoder.feature_encoder.feature_types[0] = afeatures.OneHotFeature(20, 35,
+                                                                             'editf')  # edition file ~= language
     model.encoder.feature_encoder.feature_types[1] = afeatures.OneHotFeature(32, 256, 'position')
     model.encoder.feature_encoder.feature_types[2] = afeatures.FloatFeature(4, 'degree_centrality')
     model.encoder.feature_encoder.feature_types[3] = afeatures.FloatFeature(4, 'closeness_centrality')
@@ -108,7 +110,8 @@ def test(epoch, testloader, mask_language, is_valiation):
                 loss = criterion(preds, labels)
                 probability_sum += torch.sum(max_probs)
                 probability_count += max_probs.size(0)
-                total_loss += loss
+                if not math.isnan(loss.item()):
+                    total_loss += loss
 
             verse_correct = (predicted == labels).sum().item()
             total += labels.size(0)  # [k for k, v in postag_map.items() if v in (7086, 2525, 2516, 7407)]
@@ -124,9 +127,13 @@ def test(epoch, testloader, mask_language, is_valiation):
                f"{prefix} confidence": probability_sum / probability_count})
     wandb.watch(model)
     print(
-        f'{prefix}, epoch: {epoch}, total:{total}, ACC: {correct / total}, loss: {total_loss}, confidence: {probability_sum / probability_count}')
+        f'{prefix}, epoch: {epoch}, total: {total}, ACC: {correct / total}, loss: {total_loss}, confidence: {probability_sum / probability_count}')
     clean_memory()
     return 1.0 - correct / total
+
+
+# def collate_fun(batch):
+#     return tuple(zip(*batch))
 
 
 def create_model(train_gnn_dataset, test_gnn_dataset,
@@ -155,8 +162,8 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
 
     train_gnn_dataset.set_transformer(use_transformers)
     test_gnn_dataset.set_transformer(use_transformers)
-    train_data_loader = DataLoader(train_gnn_dataset, batch_size=batch_size, shuffle=True)
-    test_data_loader = DataLoader(test_gnn_dataset, batch_size=batch_size, shuffle=False)
+    train_data_loader = DataLoader(train_gnn_dataset, batch_size=batch_size, shuffle=True)  # , collate_fn=collate_fun)
+    test_data_loader = DataLoader(test_gnn_dataset, batch_size=batch_size, shuffle=False)  # , collate_fn=collate_fun)
 
     clean_memory()
     drop_out = 0
@@ -203,7 +210,8 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
 
         if early_stopping.early_stop:
             model.load_state_dict(
-                torch.load(f'/mounts/work/ayyoob/models/gnn/checkpoint/postagging/check_point_{start_time}.pt'))
+                torch.load(
+                    f'../external_repos/GNN-POSTAG/dataset/gdfa_final/models/gnn/checkpoint/postagging/check_point_{start_time}.pt'))
 
         model_name = 'model-3'  # 2: ACC: 0.08 # f'{len(pos_lang_list)}lngs-POSFeat{tag_frequencies}alltgts_trnsfrmr{use_transformers}6LRes{residual_connection}_trainWE{train_word_embedding}_mskLng{mask_language}_E{epoch}_{params}_{start_time}_ElyStpDlta{delta}-GA-chnls{channels}'
         model.model_name = model_name
@@ -242,7 +250,9 @@ def train(epoch, data_loader, mask_language, test_data_loader, max_batches=99999
         loss = criterion(preds, labels)
         loss = loss * target.shape[0]  # TODO check if this is necessary
         loss.backward()
-        total_loss += loss.item()
+
+        if not math.isnan(loss.item()):  # happens if all labels are 'X'
+            total_loss += loss.item()
 
         if (i + 1) % 5 == 0:  # Gradient accumulation
             optimizer.step()
@@ -251,6 +261,7 @@ def train(epoch, data_loader, mask_language, test_data_loader, max_batches=99999
 
         if i % 1000 == 999:
             # print(f"loss: {total_loss}")
+            wandb.log({"total train loss": total_loss})
             total_loss = 0
             val_loss = test(epoch, test_data_loader, mask_language, True)
             # test_mostfreq(yor_data_loader, True, yor_gold_mostfreq_tag, yor_gold_mostfreq_index, (w2v_model_filtered.wv.vectors.shape[0], len(postag_map)))
@@ -270,8 +281,8 @@ def train(epoch, data_loader, mask_language, test_data_loader, max_batches=99999
         if i == max_batches:
             break
 
-    print(f"total train loss: {total_loss}")
-    wandb.log({"total train loss": total_loss})
+    optimizer.step()
+    optimizer.zero_grad()
 
 
 class POSTAGGNNDataset(Dataset):
@@ -459,7 +470,8 @@ def get_data_loadrs_for_target_editions(target_editions, dataset, verses, data_d
     target_pos_labels, target_pos_node_cover = get_language_nodes(dataset, target_editions, verses)
     gnn_dataset_target_pos = POSTAGGNNDataset(dataset, verses, None, {}, target_pos_node_cover, target_pos_labels,
                                               data_dir, group_size=50000, transformer=transformer)
-    target_data_loader = DataLoader(gnn_dataset_target_pos, batch_size=batch_size, shuffle=False)
+    target_data_loader = DataLoader(gnn_dataset_target_pos, batch_size=batch_size,
+                                    shuffle=False)  #, collate_fn=collate_fun)
 
     return target_data_loader
 
@@ -547,7 +559,8 @@ if __name__ == "__main__":
     # editions = {'eng': 'eng-x-bible-web', 'fra': 'fra-x-bible-fob'}  # listsmall3.txt
     # editions = {'eng': 'bid-eng-DBY-1000', 'fra': 'bid-fra-fob-1000'} # listsmall4.txt
     # editions = {'eng': 'bid-eng-web', 'fra': 'bid-fra-fob'}  # listsmall5.txt
-    editions = {'eng1': 'bid-eng-web', 'eng2': 'bid-eng-web'}  # listsmall6.txt
+    # editions = {'eng1': 'bid-eng-web', 'eng2': 'bid-eng-web'}  # listsmall6.txt
+    editions = {'eng1': 'eng-x-bible-web', 'eng2': 'eng-x-bible-web'}  # listsmall7.txt
 
     current_editions = []
     for lang in langs:
@@ -569,9 +582,11 @@ if __name__ == "__main__":
     # Ignore all QIDs that start with '9'
     sds_df = sds_df[~sds_df['qid'].str.startswith('9')]
     # map all qids to their sds_df.index
-    postag_map = dict(zip(sds_df['qid'], sds_df.index + 1))
-    # postag_map = {'3.5.7.2 1': 1, '3.5.1.2.9 2': 2, '4.1.9.1 3': 3, '4.9.7.2 1': 4, '4.1.9.1.4 1': 5}
+    # postag_map = dict(zip(sds_df['qid'], sds_df.index + 1))
+    postag_map = {'3.5.7.2 1': 1, '3.5.1.2.9 2': 2, '4.1.9.1 3': 3, '4.9.7.2 1': 4, '4.1.9.1.4 1': 5}
     # postag_map = {'Moon': 1, 'Star': 2, 'Verb': 3, 'Preposition': 4, 'X': 0}
+    for i in range(5, 7000):
+        postag_map[str(i)] = i
     postag_map['X'] = 0
     criterion = nn.CrossEntropyLoss(ignore_index=postag_map['X'])
 
@@ -584,12 +599,15 @@ if __name__ == "__main__":
     # pos_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
     # pos_val_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
     # pos_test_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
-    pos_lang_list = ['bid-eng-web', 'bid-fra-fob']
-    pos_val_lang_list = ['bid-eng-web', 'bid-fra-fob']
-    pos_test_lang_list = ['bid-eng-web', 'bid-fra-fob']
-    # pos_lang_list = ['bid-eng-web', 'bid-eng-web']
+    # pos_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    # pos_val_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    # pos_test_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    # pos_lang_list = ['bid-eng-web', 'bid-eng-web']  # listsmall6.txt
     # pos_val_lang_list = ['bid-eng-web', 'bid-eng-web']
     # pos_test_lang_list = ['bid-eng-web', 'bid-eng-web']
+    pos_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']  # listsmall7.txt
+    pos_val_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']
+    pos_test_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']
     train_pos_labels, train_pos_node_cover, all_tokens = get_pos_tags(train_dataset, pos_lang_list)
     val_pos_labels, val_pos_node_cover, _ = get_pos_tags(train_dataset, pos_val_lang_list)
 
@@ -614,9 +632,12 @@ if __name__ == "__main__":
     gnn_dataset_test_pos = create_me_a_gnn_dataset([val_pos_node_cover], [val_pos_labels], group_size=2,
                                                    verses=train_dataset.accepted_verses)
 
-    train_data_loader_bigbatch = DataLoader(gnn_dataset_train_pos_bigbatch, batch_size=batch_size, shuffle=False)
-    val_data_loader_pos = DataLoader(gnn_dataset_val_pos, batch_size=batch_size, shuffle=False)
-    test_data_loader_pos = DataLoader(gnn_dataset_test_pos, batch_size=batch_size, shuffle=False)
+    train_data_loader_bigbatch = DataLoader(gnn_dataset_train_pos_bigbatch, batch_size=batch_size,
+                                            shuffle=False)  # , collate_fn=collate_fun)
+    val_data_loader_pos = DataLoader(gnn_dataset_val_pos, batch_size=batch_size,
+                                     shuffle=False)  # , collate_fn=collate_fun)
+    test_data_loader_pos = DataLoader(gnn_dataset_test_pos, batch_size=batch_size,
+                                      shuffle=False)  # , collate_fn=collate_fun)
     type_check = False
 
     # #! Uncomment when data has been updated
