@@ -1,6 +1,6 @@
-import math
 from collections import defaultdict
 
+import math
 import networkx as nx
 import seaborn as sns
 from matplotlib import pyplot as plt
@@ -9,12 +9,14 @@ from nltk.metrics.distance import edit_distance
 from tqdm import tqdm
 
 from src.dictionary_creator.dictionary_creator import DictionaryCreator
+from src.semantic_domain_identifier import convert_verse_id_to_bible_reference
 
 
 class LinkPredictionDictionaryCreator(DictionaryCreator):
     STEPS = [
         '_preprocess_data',
         '_map_words_to_qids',
+        '_remove_stop_words',
         '_build_word_graph (raw)',
         '_predict_lemmas',
         '_contract_lemmas',
@@ -120,11 +122,25 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         self.word_graph.add_nodes_from(word_nodes)
         self.word_graph.add_weighted_edges_from(weighted_edges)
 
-    def _plot_subgraph(self, lang, text, min_count=1):
+    def _plot_subgraph(self, lang, text, min_count=1, verse_id=None):
+        if 'cmn' in self.target_langs:
+            plt.rcParams['font.sans-serif'] = ['SimHei']
+            plt.rcParams['axes.unicode_minus'] = False
+
         filtered_word_nodes = [word for word in self.word_graph.nodes if word.iso_language in self.target_langs]
+
+        if verse_id is not None:
+            # only words that occur in verse
+            filtered_word_nodes = set()
+            for bid in self.bids:
+                filtered_word_nodes |= {word for word in self.word_graph.nodes if
+                                        word.text in self.wtxts_by_verse_by_bid[bid][
+                                            verse_id] and word.iso_language == self._convert_bid_to_lang(bid)}
 
         filtered_weighted_edges = []
         for edge in self.word_graph.edges(data='weight'):
+            if verse_id is not None and (not edge[0] in filtered_word_nodes or not edge[1] in filtered_word_nodes):
+                continue
             lang_1 = edge[0].iso_language
             lang_2 = edge[1].iso_language
             wtxt_1 = edge[0].text
@@ -139,36 +155,41 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         filtered_word_graph = nx.Graph()
         filtered_word_graph.add_nodes_from(filtered_word_nodes)
         filtered_word_graph.add_weighted_edges_from(filtered_weighted_edges)
+        filtered_word_graph.remove_nodes_from(list(nx.isolates(filtered_word_graph)))
 
-        # define filtered subgraph of a node's 1st, 2nd, and 3rd order neighbors
-        node = self.words_by_text_by_lang[lang][text]
-        selected_nodes = {node}
-        neighbors_1st_order = set()
-        neighbors_2nd_order = set()
-        neighbors_3rd_order = set()
-        for neighbor_1st_order in filtered_word_graph.neighbors(node):
-            neighbors_1st_order.add(neighbor_1st_order)
-            is_predicted_link_1st_order = self._compute_link_score(node, neighbor_1st_order) >= self.score_threshold
-            for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
-                if not is_predicted_link_1st_order \
-                        and self._compute_link_score(neighbor_1st_order, neighbor_2nd_order) < self.score_threshold:
-                    continue
-                neighbors_2nd_order.add(neighbor_2nd_order)
-                for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):
-                    if self._compute_link_score(neighbor_2nd_order, neighbor_3rd_order) < self.score_threshold:
+        if verse_id is None:
+            # define filtered subgraph of a node's 1st, 2nd, and 3rd order neighbors
+            node = self.words_by_text_by_lang[lang][text]
+            selected_nodes = {node}
+            neighbors_1st_order = set()
+            neighbors_2nd_order = set()
+            neighbors_3rd_order = set()
+            for neighbor_1st_order in filtered_word_graph.neighbors(node):
+                neighbors_1st_order.add(neighbor_1st_order)
+                is_predicted_link_1st_order = self._compute_link_score(node, neighbor_1st_order) >= self.score_threshold
+                for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
+                    if not is_predicted_link_1st_order \
+                            and self._compute_link_score(neighbor_1st_order, neighbor_2nd_order) < self.score_threshold:
                         continue
-                    neighbors_3rd_order.add(neighbor_3rd_order)
+                    neighbors_2nd_order.add(neighbor_2nd_order)
+                    for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):
+                        if self._compute_link_score(neighbor_2nd_order, neighbor_3rd_order) < self.score_threshold:
+                            continue
+                        neighbors_3rd_order.add(neighbor_3rd_order)
 
-        # avoid that graph gets too large or messy for plotting
-        max_nodes = 50
-        selected_nodes.update(neighbors_1st_order)
-        if len(selected_nodes) + len(neighbors_2nd_order) <= max_nodes:
-            selected_nodes.update(neighbors_2nd_order)
-            if len(selected_nodes) + len(neighbors_3rd_order) <= max_nodes:
-                selected_nodes.update(neighbors_3rd_order)
-        displayed_subgraph = filtered_word_graph.subgraph(selected_nodes)
-        assert (len(displayed_subgraph.nodes) <= len(
-            displayed_subgraph.edges) + 1)  # necessary condition if graph is connected
+            # avoid that graph gets too large or messy for plotting
+            max_nodes = 50
+            selected_nodes.update(neighbors_1st_order)
+            if len(selected_nodes) + len(neighbors_2nd_order) <= max_nodes:
+                selected_nodes.update(neighbors_2nd_order)
+                if len(selected_nodes) + len(neighbors_3rd_order) <= max_nodes:
+                    selected_nodes.update(neighbors_3rd_order)
+            displayed_subgraph = filtered_word_graph.subgraph(selected_nodes)
+            assert (len(displayed_subgraph.nodes) <= len(
+                displayed_subgraph.edges) + 1)  # necessary condition if graph is connected
+        else:
+            selected_nodes = filtered_word_graph.nodes
+            displayed_subgraph = filtered_word_graph
 
         # set figure size heuristically
         width = max(6, int(len(selected_nodes) / 2.2))
@@ -196,7 +217,10 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         # draw edges (thicker edges for more frequent alignments)
         for edge in displayed_subgraph.edges(data='weight'):
             link_score = self._compute_link_score(edge[0], edge[1])
-            color = 'green' if link_score >= self.score_threshold else 'gray'
+            if link_score >= self.score_threshold:
+                color = 'green'
+            else:
+                color = 'gray'
             nx.draw_networkx_edges(displayed_subgraph, pos=pos, edgelist=[edge],
                                    # caution: might fail in debug mode with Python 3.10 instead of Python 3.9 or 3.11
                                    width=[math.log(edge[2]) + 1], alpha=0.5,
@@ -208,8 +232,10 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
             nx.draw_networkx_edge_labels(displayed_subgraph, pos, edge_labels=edge_weights)
 
         # plot the title
-        title = 'Words that Eflomal aligned with the\n' \
-                f'{lang} word "{text}"'
+        if verse_id is None:
+            title = f'Words that Eflomal aligned with the {lang} word "{text}"'
+        else:
+            title = f'Words that Eflomal aligned in the verse {convert_verse_id_to_bible_reference(verse_id)}'
         if min_count > 1:
             title += f' at least {min_count} times'
         plt.title(title)
@@ -222,7 +248,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         References
         ----------
         .. resource allocation... todo
-           (mentioned on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
+           (mentioned as "WRA" on page 3 in https://www.nature.com/articles/srep12261.pdf) [1] T. Zhou, L. Lu, Y.-C. Zhang.
 
            Predicting missing links via local information.
            Eur. Phys. J. B 71 (2009) 623.
@@ -230,6 +256,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         """
 
         def predict(word_1, word_2):
+            # can be greater than 1 (intended)
             return sum((self.word_graph.get_edge_data(word_1, common_neighbor)['weight'] +
                         self.word_graph.get_edge_data(common_neighbor, word_2)['weight'])
                        / (self._compute_sum_of_weights(common_neighbor, word_1.iso_language) +
@@ -240,11 +267,12 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
         return DictionaryCreator._apply_prediction(predict, ebunch)
 
-    def _predict_lemma_links(self, lemma_link_candidates):
+    def _predict_lemma_links(self, lemma_link_candidates, word_group_candidates_by_lang):
         # preds = nx.jaccard_coefficient(self.word_graph)
         # preds = nx.adamic_adar_index(self.word_graph)
         preds = self._weighted_resource_allocation_index(lemma_link_candidates)
-        for word_1, word_2, link_score in tqdm(preds, desc='Predicting lemma links', total=len(lemma_link_candidates)):
+        for word_1, word_2, link_score in tqdm(preds, desc='Predicting lemma links...',
+                                               total=len(lemma_link_candidates)):
             assert word_1.iso_language == word_2.iso_language
             lang = word_1.iso_language
             wtxt_1 = word_1.text
@@ -252,6 +280,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
             if link_score < 0.01:
                 continue
+            word_group_candidates_by_lang[word_1.iso_language][word_1][word_2] = link_score
             distance = edit_distance(wtxt_1, wtxt_2)
             if distance < max(len(wtxt_1), len(wtxt_2)) / 3:
                 # find the base lemma, which is the most frequent lemma
@@ -292,9 +321,74 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 set,
                 sorted(self.lemma_group_by_base_lemma_by_lang[lang].items(), key=lambda x: x[0]))
 
+    def _find_word_groups(self, word_group_candidates_by_lang):
+        """Find word groups by counting how often the words in a word group appear together in the Bible."""
+        word_groups = defaultdict(set)
+        for lang in word_group_candidates_by_lang:
+
+            verse_ids_by_word = dict()
+            bid = self._convert_lang_to_bid(lang)
+
+            for word_1 in tqdm(word_group_candidates_by_lang[lang],
+                               total=len(word_group_candidates_by_lang[lang])):
+                for word_2 in word_group_candidates_by_lang[lang][word_1]:
+                    if word_1.text in ('gingen', 'hin', 'eintragen', 'lassen', 'high', 'chief', 'priest') and \
+                            word_2.text in ('gingen', 'hin', 'eintragen', 'lassen', 'high', 'chief', 'priest'):
+                        print(word_1, word_2)
+                    assert word_1.iso_language == lang and word_2.iso_language == lang
+
+                    verse_ids = set(range(len(self.wtxts_by_verse_by_bid[bid])))
+                    if word_1 in verse_ids_by_word:
+                        verse_ids = verse_ids_by_word[word_1]
+
+                    word_1_verse_ids = set()
+
+                    # loop through all verses and check whether the words appear right next to each other
+                    for verse_id in verse_ids:
+                        wtxts = self.wtxts_by_verse_by_bid[bid][verse_id]
+
+                        if word_1.text in wtxts:
+                            word_1_verse_ids.add(verse_id)
+                        elif not word_2.text in wtxts:
+                            continue
+
+                        # check if word_1 and word_2 appear right next to each other
+                        # (there can be multiple occurrences of word_1 and word_2 in a verse)
+                        word_1_indices = [i for i, wtxt in enumerate(wtxts) if wtxt == word_1.text]
+                        word_2_indices = [i for i, wtxt in enumerate(wtxts) if wtxt == word_2.text]
+                        for word_1_index in word_1_indices:
+                            for word_2_index in word_2_indices:
+                                distance = word_2_index - word_1_index
+                                if abs(distance) <= 2:
+                                    # the words appear close to each other
+                                    link_score = word_group_candidates_by_lang[lang][word_1][word_2]
+                                    word_groups[lang].add(
+                                        (word_1, word_2, link_score, distance, word_1.occurrences_in_bible,
+                                         word_2.occurrences_in_bible))
+
+                                    if distance < 0:
+                                        # swap words
+                                        word_1, word_2 = word_2, word_1
+                                        word_1_index, word_2_index = word_2_index, word_1_index
+
+                                    context = wtxts[word_1_index:word_2_index + 1]
+                                    print((context, word_1, word_2, link_score, word_1.occurrences_in_bible,
+                                           word_2.occurrences_in_bible))
+
+                                    if distance < 0:
+                                        # swap words back
+                                        word_1, word_2 = word_2, word_1
+                                        word_1_index, word_2_index = word_2_index, word_1_index
+
+                    if word_1 not in verse_ids_by_word:
+                        verse_ids_by_word[word_1] = word_1_verse_ids
+        return word_groups
+
     def _predict_lemmas(self):
         lemma_link_candidates = self._find_lemma_link_candidates()
-        self._predict_lemma_links(lemma_link_candidates)
+        word_group_candidates_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+        self._predict_lemma_links(lemma_link_candidates, word_group_candidates_by_lang)
+        # self._find_word_groups(word_group_candidates_by_lang)
 
         # validate lemmas
         for lang in self.lemma_group_by_base_lemma_by_lang:
@@ -401,6 +495,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                           print_reciprocal_ranks=False, plot_subgraph=True):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
+        self._execute_and_track_state(self._remove_stop_words, load=load, save=save)
 
         # build the graph with single words as nodes
         self._execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
