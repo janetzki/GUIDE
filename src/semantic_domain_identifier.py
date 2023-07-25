@@ -1,9 +1,36 @@
 from collections import defaultdict
-import pandas as pd
 
+import pandas as pd
 from tqdm import tqdm
 
 from src.dictionary_creator.tfidf_dictionary_creator import TfidfDictionaryCreator
+
+vrefs = None
+
+
+def load_vrefs():
+    global vrefs
+    if vrefs is not None:
+        return vrefs
+    with open('data/vref.txt', 'r') as f:
+        vrefs = f.readlines()
+    vrefs = [vref.strip() for vref in vrefs]
+    return vrefs
+
+
+def convert_verse_id_to_bible_reference(verse_id):
+    # e.g., 0 -> Gen 1:1, 23213 -> Mat 1:1
+    vrefs = load_vrefs()
+    vref = vrefs[verse_id]
+    vref = vref[0] + vref[1].lower() + vref[2].lower() + vref[3:]
+    return vref
+
+
+def convert_bible_reference_to_verse_id(book, chapter, verse):
+    # e.g., GEN 1:1 -> 0, MAT 1:1 -> 23213
+    vrefs = load_vrefs()
+    vref = f'{book} {chapter}:{verse}'
+    return vrefs.index(vref)
 
 
 class SemanticDomainIdentifier(object):
@@ -12,10 +39,6 @@ class SemanticDomainIdentifier(object):
         self.lang = 'eng'
 
         self.dc._load_state()
-
-        with open('data/vref.txt', 'r') as f:
-            self.vrefs = f.readlines()
-        self.vrefs = [vref.strip() for vref in self.vrefs]
 
         # build a ground truth dictionary that maps wtxts to qids
         self.gt_qid_by_wtxt = defaultdict(set)
@@ -68,7 +91,7 @@ class SemanticDomainIdentifier(object):
         token_4 = '' if token_3 in '.,;:!?“”"' else token_4
 
         context = f'{token_1} {token_2} {tokens} {token_3} {token_4}'.strip()
-        bible_reference = self._convert_verse_id_to_bible_reference(verse_id)
+        bible_reference = convert_verse_id_to_bible_reference(verse_id)
         question = question.replace('# in ##', f'"{tokens}" in "{context}" ({bible_reference})')
         return question, context
 
@@ -163,18 +186,6 @@ class SemanticDomainIdentifier(object):
         self.qid_by_wtxt = {wtxt.replace('’', ' ’ '): qids for wtxt, qids in self.qid_by_wtxt.items()}
 
 
-    def _convert_verse_id_to_bible_reference(self, verse_id):
-        # e.g., 0 -> Gen 1:1, 23213 -> Mat 1:1
-        vref = self.vrefs[verse_id]
-        vref = vref[0] + vref[1].lower() + vref[2].lower() + vref[3:]
-        return vref
-
-    def convert_bible_reference_to_verse_id(self, book, chapter, verse):
-        # e.g., GEN 1:1 -> 0, MAT 1:1 -> 23213
-        vref = f'{book} {chapter}:{verse}'
-        return self.vrefs.index(vref)
-
-
 def update_matched_questions(question_by_qid):
     # updates phrasing of direct_question matched_questions.csv
     matched_questions = pd.read_csv('data/2_sd_labeling/matched_questions.csv')
@@ -183,7 +194,7 @@ def update_matched_questions(question_by_qid):
         qid = row['qid']
         tokens = row['tokens']
         context = row['context']
-        bible_reference = 'N/A' # verse_id_to_bible_reference(row['verse_id'])
+        bible_reference = 'N/A'  # verse_id_to_bible_reference(row['verse_id'])
         question = question_by_qid[qid]
         direct_question = question.replace('# in ##', f'"{tokens.upper()}" in "{context} ({bible_reference})"')
         matched_questions.loc[idx, 'direct_question'] = direct_question
@@ -198,7 +209,8 @@ if __name__ == '__main__':  # pragma: no cover
     # update_matched_questions(sdi.dc.question_by_qid_by_lang['eng'])
 
     verses = sdi.dc.wtxts_by_verse_by_bid['bid-eng-web']
-    matched_questions = sdi.identify_semantic_domains(verses, 23213, 26992)  # all four gospels # 0, 31170 = skip apocrypha
+    matched_questions = sdi.identify_semantic_domains(verses, 23213,
+                                                      26992)  # all four gospels # 0, 31170 = skip apocrypha
 
     # select relevant columns
     matched_questions = matched_questions[['direct_question', 'qid', 'tokens', 'context', 'answer', 'verse_id']]
