@@ -4,7 +4,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.dictionary_creator.tfidf_dictionary_creator import TfidfDictionaryCreator
-from utils import convert_verse_id_to_bible_reference
+from src.utils import convert_verse_id_to_bible_reference
 
 
 class SemanticDomainIdentifier(object):

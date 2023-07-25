@@ -108,6 +108,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         word_nodes = [word for lang in self.words_by_text_by_lang
                       if lang in self.target_langs  # ignore additional languages in graph
                       for word in self.words_by_text_by_lang[lang].values()]
+        assert len(word_nodes) > 0
 
         # get all edges for alignments between words in flat list
         weighted_edges = set()
@@ -116,6 +117,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 if word_2.iso_language not in self.target_langs:
                     continue
                 weighted_edges.add((word_1, word_2, count))
+        assert len(weighted_edges) > 0
 
         # create graph structures with NetworkX
         self.word_graph = nx.Graph()
@@ -491,7 +493,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                 score_by_wtxt = dict(sorted(score_by_wtxt.items(), key=lambda x: x[1][0], reverse=True))
                 self.top_scores_by_qid_by_lang[target_lang][qid] = score_by_wtxt
 
-    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='drink', min_count=1,
+    def create_dictionary(self, load=False, save=False, plot_word_lang='eng', plot_wtxt='water', min_count=1,
                           print_reciprocal_ranks=False, plot_subgraph=True):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)

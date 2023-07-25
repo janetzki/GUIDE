@@ -13,7 +13,7 @@ import pandas as pd
 from nltk import WordNetLemmatizer, pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus.reader.wordnet import WordNetError
-# from polyglot.text import Text
+from polyglot.text import Text
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
@@ -21,6 +21,7 @@ from tokenizers.trainers import BpeTrainer
 from tqdm import tqdm
 from unidecode import unidecode
 
+import src.utils
 from src.dictionary_creator.find_stop_words import find_stop_words
 from src.word import Word
 
@@ -238,7 +239,7 @@ class DictionaryCreator(ABC):
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
             most_recent_timestamp = ' '.join(most_recent_directory.split(' ')[:2])
-            assert most_recent_timestamp < self.start_timestamp
+            assert most_recent_timestamp <= self.start_timestamp
             self.start_timestamp = most_recent_timestamp
         return most_recent_directory
 
@@ -305,7 +306,7 @@ class DictionaryCreator(ABC):
             # load sds
             if lang == 'eng':
                 # also load questions without answers to have a complete list of questions
-                sd_path = f'{self.sd_path_prefix.split("_clean")[0]}_{lang}.csv'
+                sd_path = f'{self.sd_path_prefix.replace("_clean", "")}_{lang}.csv'
             else:
                 sd_path = f'{self.sd_path_prefix}_{lang}.csv'
             if os.path.isfile(sd_path):
@@ -479,6 +480,7 @@ class DictionaryCreator(ABC):
                             total=len(self.wtxts_by_verse_by_bid[bid_1])):
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0 and len(bid_1_wtxts) + len(bid_2_wtxts) > 0:
                             # verse is missing in only one bible
+                            bible_reference = src.utils.convert_verse_id_to_bible_reference(idx)
                             print('Missing verse - verses might be misaligned!', bible_reference, bid_1, bid_2,
                                   bid_1_wtxts, bid_2_wtxts)
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0:
@@ -615,6 +617,7 @@ class DictionaryCreator(ABC):
                 with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_eflomal_diag.align',
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
+                    assert len(alignment) == self.num_verses
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
 
     def _remove_stop_words(self):
