@@ -1,4 +1,6 @@
 import os
+import time
+from collections import defaultdict
 
 import networkx as nx
 
@@ -27,6 +29,11 @@ class TestLinkPredictionDictionaryCreator(AbstractTestDictionaryCreator):
                          sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self._check_if_edge_weights_doubled(self.dc)
         self._check_if_edge_weights_doubled(dc_new)
+
+        # all eng words should be lemmatized
+        self.assertFalse('called' in self.dc.words_by_text_by_lang['eng'])
+        self.assertFalse('was' in self.dc.words_by_text_by_lang['eng'])
+
         return dc_new
 
     def setUp(self) -> None:
@@ -39,7 +46,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     def test_full_pipeline_with_loading_and_with_link_prediction(self):
         self._run_full_pipeline_twice(load_1=True, save_1=True, load_2=True, save_2=True,
-                                      plot_word_lang='fra', plot_wtxt='et', min_count=2)
+                                      plot_word_lang='fra', plot_wtxt='eaux', min_count=2)
 
     def test_load_only_most_current_file(self):
         self.dc.evaluation_results_by_lang = {
@@ -48,6 +55,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc._save_state()
         del self.dc.evaluation_results_by_lang['eng']
 
+        time.sleep(1)
         self.dc = self._create_dictionary_creator()
 
         self.dc.evaluation_results_by_lang = {
@@ -77,7 +85,8 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
 
     def test__load_state_with_broken_file(self):
         # create directory
-        directory = os.path.join(self.dc.state_files_base_path, str(int(self.dc.start_timestamp) - 1))
+        directory = self.dc.start_timestamp + ' ' + ' '.join(self.dc.bids)
+        directory = os.path.join(self.dc.state_files_base_path, directory)
         os.makedirs(directory)
 
         # create a broken dill file
@@ -379,7 +388,8 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
              self.dc.words_by_text_by_lang['deu']['aneinander vorbeigehend']),
         ]
 
-        self.dc._predict_lemma_links(lemma_link_candidates)
+        word_group_candidates_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+        self.dc._predict_lemma_links(lemma_link_candidates, word_group_candidates_by_lang)
 
         self.assertEqual({
             'deu': {
@@ -432,17 +442,23 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         }, self.dc.lemma_group_by_base_lemma_by_lang)
 
     def test__contract_lemmas(self):
-        # self._create_word('drink', 'eng', None, 3)
+        eng_word_1 = self._create_word('drink', 'eng', None, 3)
         # self._create_word('drank', 'eng', None, 2)
         # self._create_word('drunk', 'eng', None, 1)
-        # self._create_word('water', 'eng', None, 5)
+        eng_word_2 = self._create_word('water', 'eng', None, 5)
         # self._create_word('waters', 'eng', None, 4)
 
-        self._create_word('boire', 'fra', None, 3)
-        self._create_word('bu', 'fra', None, 2)
-        self._create_word('buve', 'fra', None, 1)
-        self._create_word('eau', 'fra', None, 5)
-        self._create_word('eaux', 'fra', None, 4)
+        fra_word_1 = self._create_word('boire', 'fra', None, 3)
+        fra_word_2 = self._create_word('bu', 'fra', None, 2)
+        fra_word_3 = self._create_word('buve', 'fra', None, 1)
+        fra_word_4 = self._create_word('eau', 'fra', None, 5)
+        fra_word_5 = self._create_word('eaux', 'fra', None, 4)
+
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_1, 10)
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_2, 10)
+        self.dc._add_bidirectional_edge(eng_word_1, fra_word_3, 10)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_4, 10)
+        self.dc._add_bidirectional_edge(eng_word_2, fra_word_5, 10)
 
         self.dc.base_lemma_by_wtxt_by_lang = {
             'eng': {
@@ -658,6 +674,7 @@ class TestLinkPredictionDictionaryCreatorFast(TestLinkPredictionDictionaryCreato
         self.dc.progress_log = [
             '_preprocess_data',
             '_map_words_to_qids',
+            '_remove_stop_words',
             '_build_word_graph (raw)',
         ]
         self.dc.word_graph = nx.Graph()
@@ -680,4 +697,4 @@ class TestLinkPredictionDictionaryCreatorSlow(TestLinkPredictionDictionaryCreato
     # This class is for slower test cases.
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
         self._run_full_pipeline_twice(check_isomorphism=False, load_1=False, save_1=False, load_2=False, save_2=False,
-                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')
+                                      sd_path_prefix='test/data/4_semdoms/semdom_qa_clean_short')

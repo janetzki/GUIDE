@@ -13,13 +13,16 @@ import pandas as pd
 from nltk import WordNetLemmatizer, pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus.reader.wordnet import WordNetError
-from polyglot.text import Text
+# from polyglot.text import Text
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.trainers import BpeTrainer
 from tqdm import tqdm
+from unidecode import unidecode
 
+import src.utils
+from src.dictionary_creator.find_stop_words import find_stop_words
 from src.word import Word
 
 
@@ -30,70 +33,79 @@ class DictionaryCreator(ABC):
         '_preprocess_data': ['progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
                              'question_by_qid_by_lang', 'wtxts_by_verse_by_bid'],
         '_map_words_to_qids': ['aligned_wtxts_by_qid_by_lang_by_lang'],
+        '_remove_stop_words': [],
         '_evaluate': ['evaluation_results_by_lang'],
     }
 
     BIBLES_BY_BID = {
-        'bid-eng-asvbt': 'eng-engasvbt.txt',
-        'bid-eng-asv': 'eng-eng-asv.txt',
-        'bid-eng-BBE': 'eng-engBBE.txt',
-        'bid-eng-Brenton': 'eng-eng-Brenton.txt',
-        'bid-eng-DBY': 'eng-engDBY.txt',
-        'bid-eng-DRA': 'eng-engDRA.txt',
-        'bid-eng-gnv': 'eng-enggnv.txt',
-        'bid-eng-jps': 'eng-engjps.txt',
-        'bid-eng-kjv2006': 'eng-eng-kjv2006.txt',
-        'bid-eng-kjvcpb': 'eng-engkjvcpb.txt',
-        'bid-eng-kjv': 'eng-eng-kjv.txt',
-        'bid-eng-lee': 'eng-englee.txt',
-        'bid-eng-lxx2012': 'eng-eng-lxx2012.txt',
-        'bid-eng-lxxup': 'eng-englxxup.txt',
-        'bid-eng-noy': 'eng-engnoy.txt',
-        'bid-eng-oebcw': 'eng-engoebcw.txt',
-        'bid-eng-oebus': 'eng-engoebus.txt',
-        'bid-eng-oke': 'eng-engoke.txt',
-        'bid-eng-rv': 'eng-eng-rv.txt',
-        'bid-eng-tnt': 'eng-engtnt.txt',
-        'bid-eng-uk-lxx2012': 'eng-eng-uk-lxx2012.txt',
-        'bid-eng-webbe': 'eng-eng-webbe.txt',
-        'bid-eng-web-c': 'eng-eng-web-c.txt',
-        'bid-eng-webpb': 'eng-engwebpb.txt',
-        'bid-eng-webp': 'eng-engwebp.txt',
-        'bid-eng-webster': 'eng-engwebster.txt',
-        'bid-eng-web': 'eng-eng-web.txt',
-        'bid-eng-wmbb': 'eng-engwmbb.txt',
-        'bid-eng-wmb': 'eng-engwmb.txt',
-        'bid-eng-Wycliffe': 'eng-engWycliffe.txt',
-        'bid-eng-ylt': 'eng-engylt.txt',
-        'bid-eng-niv11': 'extra_english_bibles/en-NIV11.txt',
-        'bid-eng-niv84': 'extra_english_bibles/en-NIV84.txt',
-        'bid-eng-REB89': 'extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
+        'bid-eng-asvbt': 'scripture_public_domain/eng-engasvbt.txt',
+        'bid-eng-asv': 'scripture_public_domain/eng-eng-asv.txt',
+        'bid-eng-BBE': 'scripture_public_domain/eng-engBBE.txt',
+        'bid-eng-Brenton': 'scripture_public_domain/eng-eng-Brenton.txt',
+        'bid-eng-DBY': 'scripture_public_domain/eng-engDBY.txt',
+        'bid-eng-DRA': 'scripture_public_domain/eng-engDRA.txt',
+        'bid-eng-gnv': 'scripture_public_domain/eng-enggnv.txt',
+        'bid-eng-jps': 'scripture_public_domain/eng-engjps.txt',
+        'bid-eng-kjv2006': 'scripture_public_domain/eng-eng-kjv2006.txt',
+        'bid-eng-kjvcpb': 'scripture_public_domain/eng-engkjvcpb.txt',
+        'bid-eng-kjv': 'scripture_public_domain/eng-eng-kjv.txt',
+        'bid-eng-lee': 'scripture_public_domain/eng-englee.txt',
+        'bid-eng-lxx2012': 'scripture_public_domain/eng-eng-lxx2012.txt',
+        'bid-eng-lxxup': 'scripture_public_domain/eng-englxxup.txt',
+        'bid-eng-noy': 'scripture_public_domain/eng-engnoy.txt',
+        'bid-eng-oebcw': 'scripture_public_domain/eng-engoebcw.txt',
+        'bid-eng-oebus': 'scripture_public_domain/eng-engoebus.txt',
+        'bid-eng-oke': 'scripture_public_domain/eng-engoke.txt',
+        'bid-eng-rv': 'scripture_public_domain/eng-eng-rv.txt',
+        'bid-eng-tnt': 'scripture_public_domain/eng-engtnt.txt',
+        'bid-eng-uk-lxx2012': 'scripture_public_domain/eng-eng-uk-lxx2012.txt',
+        'bid-eng-webbe': 'scripture_public_domain/eng-eng-webbe.txt',
+        'bid-eng-web-c': 'scripture_public_domain/eng-eng-web-c.txt',
+        'bid-eng-webpb': 'scripture_public_domain/eng-engwebpb.txt',
+        'bid-eng-webp': 'scripture_public_domain/eng-engwebp.txt',
+        'bid-eng-webster': 'scripture_public_domain/eng-engwebster.txt',
+        'bid-eng-web': 'scripture_public_domain/eng-eng-web.txt',
+        'bid-eng-wmbb': 'scripture_public_domain/eng-engwmbb.txt',
+        'bid-eng-wmb': 'scripture_public_domain/eng-engwmb.txt',
+        'bid-eng-Wycliffe': 'scripture_public_domain/eng-engWycliffe.txt',
+        'bid-eng-ylt': 'scripture_public_domain/eng-engylt.txt',
+        'bid-eng-niv11': 'scripture_public_domain/extra_english_bibles/en-NIV11.txt',
+        'bid-eng-niv84': 'scripture_public_domain/extra_english_bibles/en-NIV84.txt',
+        'bid-eng-REB89': 'scripture_public_domain/extra_english_bibles/en-REB89.txt',  # mentions "Euphrates" 65 times
 
-        'bid-fra-fob': 'fra-fra_fob.txt',
-        'bid-fra-lsg': 'fra-fraLSG.txt',
+        'bid-fra-fob': 'scripture_public_domain/fra-fra_fob.txt',
+        'bid-fra-lsg': 'scripture_public_domain/fra-fraLSG.txt',
 
-        'bid-spa': 'spa-spaRV1909.txt',
-        'bid-ind': 'ind-ind.txt',
-        'bid-tel': 'tel-telirv.txt',
-        'bid-tha': 'tha-thaKJV.txt',
-        'bid-hin': 'hin-hinirv.txt',
-        'bid-nep': 'nep-nepulb.txt',
-        'bid-urd': 'urd-urdgvu.txt',
+        'bid-spa': 'scripture_public_domain/spa-spaRV1909.txt',
+        'bid-ind': 'scripture_public_domain/ind-ind.txt',
+        'bid-tel': 'scripture_public_domain/tel-telirv.txt',
+        'bid-tha': 'scripture_public_domain/tha-thaKJV.txt',
+        'bid-hin': 'scripture_public_domain/hin-hinirv.txt',
+        'bid-nep': 'scripture_public_domain/nep-nepulb.txt',
+        'bid-urd': 'scripture_public_domain/urd-urdgvu.txt',
+        'bid-por': 'scripture_public_domain/por-porbsl.txt',
+        'bid-swa': 'scripture_public_domain/swa-swa1850.txt',
+        'bid-mya': 'scripture_public_domain/mya-mya.txt',
+        'bid-arb': 'scripture_public_domain/arb-arb-vd.txt',
 
-        'bid-deu': 'no semdoms available/deu-deuelo.txt',
-        'bid-rus': 'no semdoms available/rus-russyn.txt',
-        'bid-vie': 'no semdoms available/vie-vie1934.txt',
-        'bid-tpi': 'no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
-        'bid-swp': 'no semdoms available/swp-swp.txt',
-        'bid-meu': '../scripture_cc/no semdoms available/meu-meu.txt',
-        'bid-meu-hmo': '../scripture_cc/no semdoms available/meu-meu-hmo.txt',
-        'bid-gej': '../scripture_copyrighted/no semdoms available/gej-GEN.txt',
+        'bid-deu': 'scripture_public_domain/no semdoms available/deu-deuelo.txt',
+        'bid-rus': 'scripture_public_domain/no semdoms available/rus-russyn.txt',
+        'bid-vie': 'scripture_public_domain/no semdoms available/vie-vie1934.txt',
+        'bid-tpi': 'scripture_public_domain/no semdoms available/tpi-tpipng.txt',  # mentions "Yufretis" 65 times
+        'bid-swp': 'scripture_public_domain/no semdoms available/swp-swp.txt',
+        'bid-cmn': 'scripture_public_domain/no semdoms available/cmn-cmn-cu89s.txt',
+        'bid-yor': 'scripture_public_domain/no semdoms available/yor-yor2017.txt',
+        'bid-meu': 'scripture_cc/no semdoms available/meu-meu.txt',
+        'bid-meu-hmo': 'scripture_cc/no semdoms available/meu-meu-hmo.txt',
+        'bid-mal': 'scripture_cc/no semdoms available/mal-mal.txt',
+        'bid-pes': 'scripture_cc/no semdoms available/pes-pes.txt',
+        'bid-gej': 'scripture_copyrighted/no semdoms available/gej-GEN.txt',
     }
 
     def __init__(self, bids, score_threshold=0.5,
                  state_files_path='data/0_state',
                  aligned_bibles_path='data/1_aligned_bibles',
-                 sd_path_prefix='../semdom extractor/output/semdom_qa_clean'):
+                 sd_path_prefix='data/4_semdoms/semdom_qa_clean'):
         assert len(bids) == len(set(bids))  # distinct elements
         self.bids = bids
         self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
@@ -101,7 +113,8 @@ class DictionaryCreator(ABC):
         self.source_lang = self._convert_bid_to_lang(self.source_bid)
         self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
         self.all_langs = sorted(
-            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp', 'meu', 'gej'])
+            ['eng', 'fra', 'spa', 'ind', 'deu', 'rus', 'tha', 'tel', 'urd', 'hin', 'nep', 'vie', 'tpi', 'swp', 'meu',
+             'gej', 'cmn'])
         self.state_files_base_path = state_files_path
         self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer = 'bpe'
@@ -115,7 +128,8 @@ class DictionaryCreator(ABC):
         self.num_verses = 41899
         self.saved_variables = {'progress_log', 'sds_by_lang', 'verses_by_bid', 'words_by_text_by_lang',
                                 'question_by_qid_by_lang', 'wtxts_by_verse_by_bid',
-                                'aligned_wtxts_by_qid_by_lang_by_lang', 'top_scores_by_qid_by_lang',
+                                'aligned_wtxts_by_qid_by_lang_by_lang', 'aligned_wtxts_by_qid_by_lang_by_lang',
+                                'top_scores_by_qid_by_lang',
                                 'evaluation_results_by_lang'}
 
         # Saved data (general)
@@ -130,6 +144,8 @@ class DictionaryCreator(ABC):
 
         # Saved data (mapping)
         self.aligned_wtxts_by_qid_by_lang_by_lang = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
+        with open('data/verse_ids.txt', 'r') as f:
+            self.verse_ids = f.read().splitlines()
 
         # Saved data (training)
         self.top_scores_by_qid_by_lang = defaultdict(dict)
@@ -140,6 +156,12 @@ class DictionaryCreator(ABC):
     @staticmethod
     def _convert_bid_to_lang(bid):
         return bid[4:7]
+
+    def _convert_lang_to_bid(self, lang):
+        # look for bid that starts with lang in self.bids
+        bids = [bid for bid in self.bids if self._convert_bid_to_lang(bid) == lang]
+        assert len(bids) == 1
+        return bids[0]
 
     @staticmethod
     def _group_words_by_qid(words):
@@ -153,6 +175,8 @@ class DictionaryCreator(ABC):
     def _transliterate_word(word):
         if word.iso_language == 'hin':
             return ' '.join(Text(word.display_text, word.iso_language).transliterate('en'))
+        elif word.iso_language == 'gej':
+            return unidecode(word.display_text)
         return word.display_text
 
     @staticmethod
@@ -164,6 +188,7 @@ class DictionaryCreator(ABC):
 
     def _save_state(self):
         state_files_directory = self.start_timestamp + ' ' + ' '.join(self.bids)
+        assert ':' in state_files_directory
         print(f'\nSaving state {state_files_directory}...')
         # create directory if it doesn't exist
         state_files_directory = os.path.join(self.state_files_base_path, state_files_directory)
@@ -205,6 +230,7 @@ class DictionaryCreator(ABC):
         directories = os.listdir(self.state_files_base_path)
         for bid in self.bids:
             directories = [directory for directory in directories if bid in directory]
+        directories = [directory for directory in directories if directory.count('bid') == len(self.bids)]
         directories.sort()
 
         most_recent_directory = None
@@ -212,8 +238,8 @@ class DictionaryCreator(ABC):
             most_recent_directory = directories[-1]
 
             # This dc should be newer than any other dc, and we do not need to load the own state.
-            most_recent_timestamp = most_recent_directory.split(' ')[0]
-            assert most_recent_timestamp < self.start_timestamp
+            most_recent_timestamp = ' '.join(most_recent_directory.split(' ')[:2])
+            assert most_recent_timestamp <= self.start_timestamp
             self.start_timestamp = most_recent_timestamp
         return most_recent_directory
 
@@ -278,7 +304,11 @@ class DictionaryCreator(ABC):
         languages = set([self._convert_bid_to_lang(bid) for bid in self.bids])
         for lang in tqdm(languages, desc='Loading semantic domains', total=len(languages)):
             # load sds
-            sd_path = f'{self.sd_path_prefix}_{lang}.csv'
+            if lang == 'eng':
+                # also load questions without answers to have a complete list of questions
+                sd_path = f'{self.sd_path_prefix.replace("_clean", "")}_{lang}.csv'
+            else:
+                sd_path = f'{self.sd_path_prefix}_{lang}.csv'
             if os.path.isfile(sd_path):
                 self.sds_by_lang[lang] = pd.read_csv(sd_path)
             else:
@@ -286,12 +316,12 @@ class DictionaryCreator(ABC):
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})
-                if lang not in ('deu', 'rus', 'vie', 'tpi', 'swp', 'meu', 'gej'):
+                if lang not in ('deu', 'rus', 'vie', 'tpi', 'swp', 'meu', 'gej', 'cmn', 'yor'):
                     raise FileNotFoundError(f'Unable to load {sd_path}')
 
         for bid in tqdm(self.bids, desc='Loading bibles', total=len(self.bids)):
             # load bible verses
-            with open(os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid]),
+            with open(os.path.join('data/5_raw_bibles', self.bibles_by_bid[bid]),
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
             assert len(self.verses_by_bid[bid]) == self.num_verses
@@ -308,12 +338,35 @@ class DictionaryCreator(ABC):
             for index, row in sds.iterrows():
                 question = row.question.replace("'", '')
                 question = question.replace('"', '')
-                answer = row.answer.replace("'", '')
+                answer = row.answer.replace("'", '') if row.answer == row.answer else ''
                 answer = answer.replace('"', '')
+                assert int(row.question_index) >= 0  # assert that question_index is parsable
                 qid = f'{row.cid} {row.question_index}'
-                wtxts = [wtxt.strip().lower() for wtxt in answer.split(',') if wtxt]
-                # if lang == 'eng':
-                #     wtxts = self._lemmatize_english_verse(wtxts)
+                wtxts = {wtxt for wtxt in answer.split(',') if wtxt}
+
+                # handle parentheses
+                words_without_parentheses = set()
+                for i, wtxt in enumerate(wtxts):
+                    text_in_parentheses = re.findall(r'\([^)]*\)', wtxt)
+                    if len(text_in_parentheses) == 0:
+                        words_without_parentheses.add(wtxt)
+                        continue
+                    text_in_parentheses = text_in_parentheses[0]  # We rarely have more than one parentheses block.
+
+                    if text_in_parentheses[-2:] != '.)' and text_in_parentheses not in ('(n)', '(v)'):
+                        # remove parentheses
+                        new_word = wtxt.replace('(', '').replace(')', '')
+                        words_without_parentheses.add(new_word)
+
+                    # add text without text in parentheses
+                    new_word = re.sub(r'\([^)]*\)', '', wtxt)
+                    new_word = re.sub(r' +', ' ', new_word)  # replace double spaces with single spaces
+                    words_without_parentheses.add(new_word)
+
+                wtxts = [wtxt.strip().lower() for wtxt in words_without_parentheses]
+
+                if lang == 'eng':
+                    wtxts = self._lemmatize_english_verse(wtxts)
                 words = {wtxt: Word(wtxt.strip(), lang, {qid}) for wtxt in wtxts}
 
                 # add new words to words_by_text_by_lang
@@ -356,19 +409,21 @@ class DictionaryCreator(ABC):
             else:  # nouns and everything else
                 lemmatized_wtxts.append(self.eng_lemmatizer.lemmatize(wtxt))
 
-        # replace each word that changed with "original_lemma"
-        for i, (wtxt, lemmatized_wtxt) in enumerate(zip(verse, lemmatized_wtxts)):
-            if wtxt != lemmatized_wtxt:
-                lemmatized_wtxts[i] = f'{wtxt}_{lemmatized_wtxt}'
+        ## formerly needed by SemanticDomainIdentifier
+        ## replace each word that changed with "original_lemma"
+        # for i, (wtxt, lemmatized_wtxt) in enumerate(zip(verse, lemmatized_wtxts)):
+        #     if wtxt != lemmatized_wtxt:
+        #         lemmatized_wtxts[i] = f'{wtxt}_{lemmatized_wtxt}'
 
         return lemmatized_wtxts
 
     def _tokenize_verses(self):
         for bid in tqdm(self.bids, desc='Tokenizing verses', total=len(self.bids)):
             assert self.tokenizer == 'bpe'
-            file = os.path.join('../load bibles in DGraph/content/scripture_public_domain', self.bibles_by_bid[bid])
+            file = os.path.join('data/5_raw_bibles', self.bibles_by_bid[bid])
             tokenizer = Tokenizer(BPE())
             tokenizer.pre_tokenizer = Whitespace()  # todo: try to delete this
+            # tokenizer.pre_tokenizer = Metaspace() # replaces ' ' with '_'
             trainer = BpeTrainer()
             # todo: fix tokenizer (e.g., splits 'Prahlerei' into 'Pra' and 'hlerei') (might
             #   not be so important because this mainly happens for rare words) possible solution: use pre-defined word
@@ -376,6 +431,10 @@ class DictionaryCreator(ABC):
             # todo: try out a WordPieceTrainer
             #   (https://towardsdatascience.com/designing-tokenizers-for-low-resource-languages-7faa4ab30ef4)
             tokenizer.train(files=[file], trainer=trainer)
+
+            # assert that no verse contains a '_' (due to the Metaspace tokenizer)
+            for verse in self.verses_by_bid[bid]:
+                assert '_' not in verse
 
             # tokenize all verses
             wtxts_by_verse = [tokenizer.encode(verse).tokens for verse in self.verses_by_bid[bid]]
@@ -386,7 +445,9 @@ class DictionaryCreator(ABC):
             # lemmatize all English words
             lang = self._convert_bid_to_lang(bid)
             if lang == 'eng':
-                wtxts_by_verse = [self._lemmatize_english_verse(verse) for verse in wtxts_by_verse]
+                wtxts_by_verse = [self._lemmatize_english_verse(verse) for verse in
+                                  tqdm(wtxts_by_verse, total=len(wtxts_by_verse),
+                                       desc='Lemmatizing English verses')]
 
             self.wtxts_by_verse_by_bid[bid] = wtxts_by_verse.copy()
 
@@ -419,7 +480,9 @@ class DictionaryCreator(ABC):
                             total=len(self.wtxts_by_verse_by_bid[bid_1])):
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0 and len(bid_1_wtxts) + len(bid_2_wtxts) > 0:
                             # verse is missing in only one bible
-                            print('Missing verse - verses might be misaligned!', idx, bid_1_wtxts, bid_2_wtxts)
+                            bible_reference = src.utils.convert_verse_id_to_bible_reference(idx)
+                            print('Missing verse - verses might be misaligned!', bible_reference, bid_1, bid_2,
+                                  bid_1_wtxts, bid_2_wtxts)
                         if len(bid_1_wtxts) * len(bid_2_wtxts) == 0:
                             # verse is missing in both bibles
                             bid_1_wtxts = ['#placeholder#']
@@ -430,6 +493,7 @@ class DictionaryCreator(ABC):
                     ['sh', 'align_bibles.sh', bid_1, bid_2, self.tokenizer,
                      self.aligned_bibles_path],
                     capture_output=True, text=True)
+                print(result.stderr)
                 ## retrieve the final entropy and perplexity
                 # matches = re.search(r'FINAL(.|\n)*cross entropy: (\d+\.\d+)\n *perplexity: (\d+\.\d+)', result.stderr)
                 # cross_entropy = float(matches.group(2))
@@ -469,8 +533,15 @@ class DictionaryCreator(ABC):
         if self._check_already_done(step_name, load) and step_name != '_evaluate':
             print(f'Skipped: {step_name} already done')
             return
+        print(f'Executing: {step_name}')
         func(*args, **kwargs)
         self._set_progress(step_name, save)
+
+    def _remove_punctuation(self):
+        for lang in self.target_langs:
+            for wtxt in self.words_by_text_by_lang[lang]:
+                if wtxt in self.punctuation:
+                    del self.words_by_text_by_lang[lang][wtxt]
 
     def _preprocess_data(self):
         self._load_data()
@@ -510,19 +581,27 @@ class DictionaryCreator(ABC):
         self.aligned_wtxts_by_qid_by_lang_by_lang[lang_1][lang_2] = defaultdict(str)
         self.aligned_wtxts_by_qid_by_lang_by_lang[lang_2][lang_1] = defaultdict(str)
 
-        for alignment_line, wtxts_1, wtxts_2 in tqdm(
-                zip(alignment, self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2]),
+        for idx, (alignment_line, wtxts_1, wtxts_2) in tqdm(
+                enumerate(zip(alignment, self.wtxts_by_verse_by_bid[bid_1], self.wtxts_by_verse_by_bid[bid_2])),
                 desc=f'Map {bid_1} and {bid_2} words and semantic domain questions bidirectionally',
                 total=len(self.verses_by_bid[bid_1])):
-            if alignment_line in ('\n', '0-0\n') and len(wtxts_1) * len(wtxts_2) == 0:
+            if alignment_line == '\n':
+                assert (len(wtxts_1) * len(wtxts_2) == 0
+                        or len(wtxts_1) + len(wtxts_2) > 100)  # word aligner skipped this verse because it is too long
                 continue
+            if alignment_line == '0-0\n' and len(wtxts_1) * len(wtxts_2) == 0:
+                continue
+            alignment_line = alignment_line.replace('\n', '')
             aligned_wtxt_pairs = alignment_line.split(' ')
-            aligned_wtxt_pairs[-1].replace('\n', '')
 
             for aligned_wtxt_pair in aligned_wtxt_pairs:
                 wtxt_1_idx, wtxt_2_idx = [int(num) for num in aligned_wtxt_pair.split('-')]
                 wtxt_1 = wtxts_1[wtxt_1_idx]
                 wtxt_2 = wtxts_2[wtxt_2_idx]
+                punctuations = ['.', ',', ';', ':', '?', '!', '(', ')', '[', ']', '{', '}', '«', '»', '“', '”', '…',
+                                '"', "'", '-', '`', '´']
+                if wtxt_1 in punctuations or wtxt_2 in punctuations:
+                    continue
                 word_1 = self.words_by_text_by_lang[lang_1][wtxt_1]
                 word_2 = self.words_by_text_by_lang[lang_2][wtxt_2]
                 self._map_word_to_qid_bidirectionally(wtxt_1, wtxt_2, lang_1, lang_2)
@@ -538,7 +617,19 @@ class DictionaryCreator(ABC):
                 with open(f'{self.aligned_bibles_path}/{bid_1}_{bid_2}_{self.tokenizer}_eflomal_diag.align',
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
+                    assert len(alignment) == self.num_verses
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
+
+    def _remove_stop_words(self):
+        stop_words = find_stop_words(self)
+        for lang in stop_words:
+            for wtxt in stop_words[lang]:
+                word = self.words_by_text_by_lang[lang][wtxt]
+                aligned_words = list(word.get_aligned_words_and_counts(self.words_by_text_by_lang))
+                for w, _ in aligned_words:
+                    word.remove_alignment(w)
+                    w.remove_alignment(word)
+        # self.remove_stop_words_from_alignment_file(stop_words)
 
     def _filter_target_sds_with_threshold(self):
         # remove all target wtxts with a score (e.g., TF-IDF) below a threshold

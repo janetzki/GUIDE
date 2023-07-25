@@ -13,12 +13,12 @@ class Word(object):
 
     def __eq__(self, other):
         return type(other) == Word \
-               and self.text == other.text \
-               and self.iso_language == other.iso_language \
-               and self.qids == other.qids \
-               and self.occurrences_in_bible == other.occurrences_in_bible \
-               and self.display_text == other.display_text \
-               and self._aligned_words == other._aligned_words
+            and self.text == other.text \
+            and self.iso_language == other.iso_language \
+            and self.qids == other.qids \
+            and self.occurrences_in_bible == other.occurrences_in_bible \
+            and self.display_text == other.display_text  # \
+        # and self._aligned_words == other._aligned_words # todo: use this again (outcommented for speed)
 
     def __hash__(self):
         return hash((self.iso_language, self.text))

@@ -14,9 +14,34 @@ if __name__ == '__main__':  # pragma: no cover
 
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-tpi', 'bid-meu'], score_threshold=0.2)
-    dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-gej'], score_threshold=0.2)
-    dc.create_dictionary(load=True, save=True, plot_wtxt='water', min_count=4, print_reciprocal_ranks=True,
-                         plot_subgraph=True)
-    dc._save_state()
-    # dc.print_lemma_groups()
-    # dc._plot_subgraph(lang='eng', text='graven', min_count=4)
+    dc = LinkPredictionDictionaryCreator([
+        'bid-eng-web',
+        'bid-fra-fob',
+        'bid-ind',
+        'bid-por',
+        'bid-swa',
+        'bid-spa',
+
+        # non-latin
+        'bid-mya',
+        'bid-cmn',
+        'bid-hin',
+        'bid-mal',
+        'bid-nep',
+        'bid-urd',
+        'bid-pes',
+
+        # no semantic domains
+        'bid-gej',
+        'bid-deu',
+        'bid-yor',
+        'bid-tpi',
+        'bid-meu',
+    ],
+        score_threshold=0.2)
+    dc.create_dictionary(load=True, save=True, plot_wtxt='neither', min_count=4, print_reciprocal_ranks=True,
+                         plot_subgraph=False)
+
+    for verse_id in range(25042, 25047):  # Lk 2:1-5
+        dc._plot_subgraph(lang='eng', text='graven', min_count=1, verse_id=verse_id)
+    dc._plot_subgraph(lang='eng', text='book', min_count=4)

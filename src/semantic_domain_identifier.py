@@ -1,9 +1,10 @@
 from collections import defaultdict
-import pandas as pd
 
+import pandas as pd
 from tqdm import tqdm
 
 from src.dictionary_creator.tfidf_dictionary_creator import TfidfDictionaryCreator
+from src.utils import convert_verse_id_to_bible_reference
 
 
 class SemanticDomainIdentifier(object):
@@ -12,10 +13,6 @@ class SemanticDomainIdentifier(object):
         self.lang = 'eng'
 
         self.dc._load_state()
-
-        with open('data/vref.txt', 'r') as f:
-            self.vrefs = f.readlines()
-        self.vrefs = [vref.strip() for vref in self.vrefs]
 
         # build a ground truth dictionary that maps wtxts to qids
         self.gt_qid_by_wtxt = defaultdict(set)
@@ -68,7 +65,7 @@ class SemanticDomainIdentifier(object):
         token_4 = '' if token_3 in '.,;:!?“”"' else token_4
 
         context = f'{token_1} {token_2} {tokens} {token_3} {token_4}'.strip()
-        bible_reference = self._convert_verse_id_to_bible_reference(verse_id)
+        bible_reference = convert_verse_id_to_bible_reference(verse_id)
         question = question.replace('# in ##', f'"{tokens}" in "{context}" ({bible_reference})')
         return question, context
 
@@ -121,13 +118,12 @@ class SemanticDomainIdentifier(object):
 
         return top_qids_share, top_wtxts_share, top_direct_questions_share, qid_count, wtxt_count, direct_question_count
 
-    def identify_semantic_domains(self, verses):
+    def identify_semantic_domains(self, verses, verse_id_start=0, verse_id_end=None):
         # lookup each token in the dictionary to identify semantic domains
-        # matched_questions = pd.DataFrame(columns=['idx', 'token_count', 'sd_name', 'question_text', 'words',
-        #                                           'qid', 'direct_question', 'tokens', 'context', 'answer', 'verse_id'])
         matched_qids = {}
 
-        verse_id_start, verse_id_end = 23213, 26992  # all four gospels # :31170 # skip apocrypha
+        if verse_id_end is None:
+            verse_id_end = len(verses)
         verse_subset = verses[verse_id_start:verse_id_end]
         for verse_offset, verse in enumerate(
                 tqdm(verse_subset, desc='Identifying semantic domains', total=len(verse_subset))):
@@ -159,23 +155,9 @@ class SemanticDomainIdentifier(object):
 
         return pd.DataFrame.from_dict(matched_qids, 'index')
 
-        # todo ~#1: evaluate identified semantic domains with verse-semdom mappings from human labeler
-
     def _tokenize_all_wtxts(self):
         # add an extra space before and after each '’' in the keys of self.qid_by_wtxt to align tokenizers
         self.qid_by_wtxt = {wtxt.replace('’', ' ’ '): qids for wtxt, qids in self.qid_by_wtxt.items()}
-
-
-    def _convert_verse_id_to_bible_reference(self, verse_id):
-        # e.g., 0 -> Gen 1:1, 23213 -> Mat 1:1
-        vref = self.vrefs[verse_id]
-        vref = vref[0] + vref[1].lower() + vref[2].lower() + vref[3:]
-        return vref
-
-    def convert_bible_reference_to_verse_id(self, book, chapter, verse):
-        # e.g., GEN 1:1 -> 0, MAT 1:1 -> 23213
-        vref = f'{book} {chapter}:{verse}'
-        return self.vrefs.index(vref)
 
 
 def update_matched_questions(question_by_qid):
@@ -186,7 +168,7 @@ def update_matched_questions(question_by_qid):
         qid = row['qid']
         tokens = row['tokens']
         context = row['context']
-        bible_reference = 'N/A' # verse_id_to_bible_reference(row['verse_id'])
+        bible_reference = 'N/A'  # verse_id_to_bible_reference(row['verse_id'])
         question = question_by_qid[qid]
         direct_question = question.replace('# in ##', f'"{tokens.upper()}" in "{context} ({bible_reference})"')
         matched_questions.loc[idx, 'direct_question'] = direct_question
@@ -201,7 +183,8 @@ if __name__ == '__main__':  # pragma: no cover
     # update_matched_questions(sdi.dc.question_by_qid_by_lang['eng'])
 
     verses = sdi.dc.wtxts_by_verse_by_bid['bid-eng-web']
-    matched_questions = sdi.identify_semantic_domains(verses)
+    matched_questions = sdi.identify_semantic_domains(verses, 23213,
+                                                      26992)  # all four gospels # 0, 31170 = skip apocrypha
 
     # select relevant columns
     matched_questions = matched_questions[['direct_question', 'qid', 'tokens', 'context', 'answer', 'verse_id']]

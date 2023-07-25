@@ -34,7 +34,7 @@ class AbstractTestDictionaryCreator(TestCase):
         })
         self.maxDiff = 100000
 
-    def _create_dictionary_creator(self, bids=None, sd_path_prefix='test/data/semdom_qa_clean_short'):
+    def _create_dictionary_creator(self, bids=None, sd_path_prefix='test/data/4_semdoms/semdom_qa_clean_short'):
         if bids is None:
             bids = ['bid-eng-DBY-10', 'bid-fra-fob-10']
 
