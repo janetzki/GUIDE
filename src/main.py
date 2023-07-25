@@ -12,31 +12,33 @@ if __name__ == '__main__':  # pragma: no cover
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     os.chdir(project_root)
 
-    #  dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
+    # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-tpi', 'bid-meu'], score_threshold=0.2)
-    dc = LinkPredictionDictionaryCreator(['bid-eng-web',
-                                          'bid-fra-fob',
-                                          'bid-ind',
-                                          'bid-por',
-                                          'bid-swa',
-                                          'bid-spa',
+    dc = LinkPredictionDictionaryCreator([
+        'bid-eng-web',
+        'bid-fra-fob',
+        'bid-ind',
+        'bid-por',
+        'bid-swa',
+        'bid-spa',
 
-                                          # non-latin
-                                          'bid-mya',
-                                          'bid-cmn',
-                                          'bid-hin',
-                                          'bid-mal',
-                                          'bid-nep',
-                                          'bid-urd',
-                                          'bid-pes',
+        # non-latin
+        'bid-mya',
+        'bid-cmn',
+        'bid-hin',
+        'bid-mal',
+        'bid-nep',
+        'bid-urd',
+        'bid-pes',
 
-                                          # no semantic domains
-                                          'bid-gej',
-                                          'bid-deu',
-                                          'bid-yor',
-                                          'bid-tpi',
-                                          'bid-meu', ],
-                                         score_threshold=0.2)
+        # no semantic domains
+        'bid-gej',
+        'bid-deu',
+        'bid-yor',
+        'bid-tpi',
+        'bid-meu',
+    ],
+        score_threshold=0.2)
     dc.create_dictionary(load=True, save=True, plot_wtxt='neither', min_count=4, print_reciprocal_ranks=True,
                          plot_subgraph=False)
 
