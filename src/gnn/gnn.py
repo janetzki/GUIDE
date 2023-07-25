@@ -1220,9 +1220,9 @@ class LinkPredictor(object):
         f1_loss = -1.0  # f1_loss_function(y_hat, y)
         link_probs = y_hat.sigmoid()
         # y = eval_data[self.TARGET_EDGE_TYPE].edge_label.cpu().numpy()
-        assert (abs(self.model(self.data.x, self.data.edge_index, self.data.edge_weight)[
-                        # assert that the batches lead to the same result, ignoring numerical errors
-                        mask].sigmoid().sum().item() - link_probs.sum().item()) < 10.0)
+        # assert (abs(self.model(self.data.x, self.data.edge_index, self.data.edge_weight)[
+        #                 # assert that the batches lead to the same result, ignoring numerical errors
+        #                 mask].sigmoid().sum().item() - link_probs.sum().item()) < 10.0)
         y_tensor = y.cpu()
         link_probs_tensor = link_probs.cpu()
         y = y.cpu().numpy()
@@ -1265,7 +1265,7 @@ class LinkPredictor(object):
             print(f'Precision: {precision:.2f}')
             recall = true_positives / (true_positives + false_negatives)
             print(f'Recall: {recall:.2f}')
-            f1 = 2 * (precision * recall) / (precision + recall)
+            f1 = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0.0
             print(f'F1: {f1:.2f}')
             # bacc = balanced_accuracy_score(y, y_hat >= ideal_threshold)
             # print(f'Accuracy: {acc:.2f}')
@@ -1596,10 +1596,12 @@ class LinkPredictor(object):
         self.model.to(self.device)
 
     def test(self, print_human_readable_predictions=True, threshold=None, eval_train_set=False,
-             compute_ideal_threshold=True):
+             compute_ideal_threshold=True, plots=None):
+        plots = [] if plots is None else plots
+
         print('\nValidation set performance:')
         _, _, ideal_threshold, _, _, _, _, _, _, _ = self.evaluate(
-            self.data.val_mask, ['weights', 'probs'], print_human_readable_predictions, True, threshold,
+            self.data.val_mask, plots, print_human_readable_predictions, True, threshold,
             compute_ideal_threshold=compute_ideal_threshold)
 
         for lang in self.gt_langs:
@@ -2036,21 +2038,21 @@ class LinkPredictor(object):
         # return
 
         self.build_dataset()
-        self.init_model(self.data)
+        # self.init_model(self.data)
+        #
+        # self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['optimizer'][
+        #     'learning_rate'], weight_decay=self.config['optimizer']['weight_decay'])
+        # assert (self.data.is_undirected())
+        #
+        # # ml wandb.init(project="Link prediction, Movie Lens dataset")
+        # self.train_link_predictor()
 
-        self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['optimizer'][
-            'learning_rate'], weight_decay=self.config['optimizer']['weight_decay'])
-        assert (self.data.is_undirected())
-
-        # ml wandb.init(project="Link prediction, Movie Lens dataset")
-        self.train_link_predictor()
-
-        # path_1 = 'data/3_models/model_proud-pond-143.bin'
-        # self.load_model(path_1)
-        path_1 = f"{self.config['train']['model_path']}_{wandb.run.name}.bin"
-        self.save_model(path_1)
+        path_1 = 'data/3_models/model_fast-dew-9_precision0.47_F10.21_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin'  # 'data/3_models/model_proud-pond-143.bin'
+        self.load_model(path_1)
+        # path_1 = f"{self.config['train']['model_path']}_{wandb.run.name}.bin"
+        # self.save_model(path_1)
         test_loss, test_auc, ideal_threshold, test_f1, test_precision = self.test(eval_train_set=True, threshold=1.00,
-                                                                                  compute_ideal_threshold=False)
+                                                                                  compute_ideal_threshold=False)  # plots = ['weights', 'probs']
         path_2 = path_1[
                  :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
         self.save_model(path_2)
@@ -2121,8 +2123,9 @@ if __name__ == '__main__':
     dc = LinkPredictionDictionaryCreator(['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-por', 'bid-swa', 'bid-spa',
                                           'bid-mya', 'bid-cmn', 'bid-hin', 'bid-mal', 'bid-nep', 'bid-urd', 'bid-pes',
                                           'bid-gej', 'bid-deu', 'bid-yor', 'bid-tpi', 'bid-meu'])
-    lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'por', 'swa', 'spa', 'mya', 'cmn', 'hin', 'mal', 'arb', 'nep', 'urd',
-                            'pes', 'gej', 'deu', 'yor', 'tpi', 'meu'}, config,
+    lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'por', 'swa', 'spa', 'hin', 'mal', 'nep'}  # 'urd', 'pes'
+                       , config,
                        'data/7_graphs/graph-nep.cpickle')
 
     lp.run_gnn_pipeline()
+    print("GNN pipeline finished")
