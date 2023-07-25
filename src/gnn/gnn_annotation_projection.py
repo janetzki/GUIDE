@@ -4,6 +4,7 @@ import sys
 import gensim.models.keyedvectors
 import math
 import pandas as pd
+from gensim.models import Word2Vec
 
 from my_utils.earlystopping import EarlyStopping
 
@@ -28,16 +29,18 @@ from torch.utils.data import Dataset, DataLoader
 import random
 
 learning_rate = 0.0001  # increase? # 0.00001
-epochs = 100  # increase
+epochs = 300  # increase
 batch_size = 1  # increase? --> crashes because of collate_fn
 threshold = 0.95  # for self-learning
+drop_out = 0.5  # TODO: try out higher dropout # 0.0
 
 wandb.init(project="GNN annotation projection")
 wandb.config = {
     "learning_rate": learning_rate,
     "epochs": epochs,
     "batch_size": batch_size,
-    "self_learning_threshold": threshold
+    "self_learning_threshold": threshold,
+    "drop_out": drop_out,
 }
 
 
@@ -166,7 +169,6 @@ def create_model(train_gnn_dataset, test_gnn_dataset,
     test_data_loader = DataLoader(test_gnn_dataset, batch_size=batch_size, shuffle=False)  # , collate_fn=collate_fun)
 
     clean_memory()
-    drop_out = 0
     n_head = 1
     in_dim = sum(t.out_dim for t in features)
     print(in_dim)
@@ -283,6 +285,7 @@ def train(epoch, data_loader, mask_language, test_data_loader, max_batches=99999
 
     optimizer.step()
     optimizer.zero_grad()
+    wandb.log({"total train loss": total_loss})
 
 
 class POSTAGGNNDataset(Dataset):
@@ -361,8 +364,9 @@ class POSTAGGNNDataset(Dataset):
         if POSTAG:
             postags = self.pos_labels[verse][padding: self.verse_info[verse]['x'].size(0) + padding, :]
             postags = postags.detach().clone()
-            postags[torch.LongTensor(nodes) - padding, :] = 0
-            self.verse_info[verse]['x'] = torch.cat((self.verse_info[verse]['x'], postags), dim=1)
+            postags[torch.LongTensor(nodes) - padding, :] = 0  # JJ: mask? which nodes?
+            self.verse_info[verse]['x'] = torch.cat((self.verse_info[verse]['x'], postags),
+                                                    dim=1)  # JJ: Here we add the neighbor_tags to the features
 
         # Add token id as a feature, used to extract token information (like token's tag distribution)
         word_number = self.verse_info[verse]['x'][:, 9]
@@ -506,7 +510,8 @@ class DataEncoder():
                 sag, khar, gav = (i, batch, verse)
                 print(sag, khar, gav)
                 print(e)
-                1 / 0
+                # 1 / 0
+                z = None
 
             yield z, verse, i, batch
 
@@ -527,8 +532,9 @@ def filter_w2v_model(w2v_model, all_tokens, lang):
 
 
 if __name__ == "__main__":
-    # print("Loading word2vec model")
-    ## w2v_model = Word2Vec.load("/mounts/work/ayyoob/models/w2v/word2vec_POS_small_final_langs_10e.model")
+    print("Loading word2vec model")
+    w2v_model_filtered = Word2Vec.load(
+        "../external_repos/GNN-POSTAG/dataset/gdfa_final/models/w2v/word2vec_POS_small_final_langs.model")
     # w2v_model = api.load('glove-twitter-25')
 
     WORDEMBEDDING = False
@@ -554,13 +560,13 @@ if __name__ == "__main__":
         else:
             old_testament_verses.append(verse)
 
-    # langs = ['eng', 'fra']
-    langs = ['eng1', 'eng2']
+    langs = ['eng', 'fra']
+    # langs = ['eng1', 'eng2']
     # editions = {'eng': 'eng-x-bible-web', 'fra': 'fra-x-bible-fob'}  # listsmall3.txt
     # editions = {'eng': 'bid-eng-DBY-1000', 'fra': 'bid-fra-fob-1000'} # listsmall4.txt
-    # editions = {'eng': 'bid-eng-web', 'fra': 'bid-fra-fob'}  # listsmall5.txt
+    editions = {'eng': 'bid-eng-web', 'fra': 'bid-fra-fob'}  # listsmall5.txt
     # editions = {'eng1': 'bid-eng-web', 'eng2': 'bid-eng-web'}  # listsmall6.txt
-    editions = {'eng1': 'eng-x-bible-web', 'eng2': 'eng-x-bible-web'}  # listsmall7.txt
+    # editions = {'eng1': 'eng-x-bible-web', 'eng2': 'eng-x-bible-web'}  # listsmall7.txt
 
     current_editions = []
     for lang in langs:
@@ -576,42 +582,44 @@ if __name__ == "__main__":
         return train_ds
 
 
-    sds_df = pd.read_csv('../semdom extractor/output/semdom_qa_clean_eng.csv')
+    sds_df = pd.read_csv('data/4_semdoms/semdom_qa_clean_eng.csv')
     # Add column qid = f'{cid} {question_index}'
     sds_df['qid'] = sds_df.apply(lambda row: f"{row['cid']} {row['question_index']}", axis=1)
     # Ignore all QIDs that start with '9'
     sds_df = sds_df[~sds_df['qid'].str.startswith('9')]
-    # map all qids to their sds_df.index
-    # postag_map = dict(zip(sds_df['qid'], sds_df.index + 1))
-    postag_map = {'3.5.7.2 1': 1, '3.5.1.2.9 2': 2, '4.1.9.1 3': 3, '4.9.7.2 1': 4, '4.1.9.1.4 1': 5}
+    ## map all qids to their sds_df.index
+    postag_map = dict(zip(sds_df['qid'], sds_df.index + 1))
+    # postag_map = {'3.5.7.2 1': 1, '3.5.1.2.9 2': 2, '4.1.9.1 3': 3, '4.9.7.2 1': 4, '4.1.9.1.4 1': 5}
     # postag_map = {'Moon': 1, 'Star': 2, 'Verb': 3, 'Preposition': 4, 'X': 0}
-    for i in range(5, 7000):
-        postag_map[str(i)] = i
+    # for i in range(5, 7000):
+    #     postag_map[str(i)] = i
     postag_map['X'] = 0
+    postag_map['None'] = len(postag_map)
     criterion = nn.CrossEntropyLoss(ignore_index=postag_map['X'])
 
     shuffled_verses = train_dataset.accepted_verses[:]
     random.shuffle(shuffled_verses)
 
-    # pos_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
+    # pos_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']  # listsmall3.txt
     # pos_val_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
     # pos_test_lang_list = ['eng-x-bible-web', 'fra-x-bible-fob']
-    # pos_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
+    # pos_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']  # listsmall4.txt
     # pos_val_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
     # pos_test_lang_list = ['bid-eng-DBY-1000', 'bid-fra-fob-1000']
-    # pos_lang_list = ['bid-eng-web', 'bid-fra-fob']
-    # pos_val_lang_list = ['bid-eng-web', 'bid-fra-fob']
-    # pos_test_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    pos_lang_list = ['bid-eng-web', 'bid-fra-fob']  # listsmall5.txt
+    pos_val_lang_list = ['bid-eng-web', 'bid-fra-fob']
+    pos_test_lang_list = ['bid-eng-web', 'bid-fra-fob']
     # pos_lang_list = ['bid-eng-web', 'bid-eng-web']  # listsmall6.txt
     # pos_val_lang_list = ['bid-eng-web', 'bid-eng-web']
     # pos_test_lang_list = ['bid-eng-web', 'bid-eng-web']
-    pos_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']  # listsmall7.txt
-    pos_val_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']
-    pos_test_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']
+    # pos_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']  # listsmall7.txt
+    # pos_val_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']
+    # pos_test_lang_list = ['eng-x-bible-web', 'eng-x-bible-web']
     train_pos_labels, train_pos_node_cover, all_tokens = get_pos_tags(train_dataset, pos_lang_list)
     val_pos_labels, val_pos_node_cover, _ = get_pos_tags(train_dataset, pos_val_lang_list)
 
     # w2v_model_filtered = filter_w2v_model(w2v_model, all_tokens, pos_lang_list[0])
+    # w2v_model_filtered.save('../external_repos/GNN-POSTAG/dataset/gdfa_final/models/w2v/word2vec_POS_small_final_langs.model')
     # word_vectors = w2v_model_filtered.vectors
     w2v_model = None  # clean memory
 
@@ -641,22 +649,29 @@ if __name__ == "__main__":
     type_check = False
 
     # #! Uncomment when data has been updated
-    tag_frequencies_source = torch.zeros(1,  # w2v_model_filtered.vectors.shape[0],
-                                         len(postag_map))  # tag_frequencies_source = tag_frequencies - tag_frequencies_target # TODO: understand if original code works better
-    res_ = posutil.get_tag_frequencies_node_tags(model, [train_pos_node_cover], [train_pos_labels], len(postag_map),
-                                                 1,  # w2v_model_filtered.vectors.shape[0],
-                                                 [target_data_loader_train], [train_data_loader_bigbatch], DataEncoder,
-                                                 source_tag_frequencies=tag_frequencies_source,
-                                                 target_train_treshold=threshold, type_check=type_check)
-
-    print('saving at',
-          f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
-    torch.save(res_,
-               f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
+    # res_ = torch.load(f'../external_repos/GNN-POSTAG/dataset/gdfa_final/models/gnn/checkpoint/postagging/model-3.pickle')
+    # tag_frequencies, tag_frequencies_target, pos_node_cover_exts, pos_label_exts, tag_based_stats = res_
+    # # tag_frequencies_source = torch.zeros(1,  # w2v_model_filtered.vectors.shape[0],
+    # #                                     len(postag_map))
+    # tag_frequencies_source = tag_frequencies - tag_frequencies_target
+    # res_ = posutil.get_tag_frequencies_node_tags(model, [train_pos_node_cover], [train_pos_labels], len(postag_map),
+    #                                              1,  # w2v_model_filtered.vectors.shape[0],
+    #                                              [target_data_loader_train], [train_data_loader_bigbatch], DataEncoder,
+    #                                              source_tag_frequencies=tag_frequencies_source,
+    #                                              target_train_treshold=threshold, type_check=type_check)
+    #
+    # print('saving at',
+    #       f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
+    # torch.save(res_,
+    #            f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
     # #!  end
 
-    res_ = torch.load(
-        f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
+    res_ = posutil.get_tag_frequencies_node_tags(model, [train_pos_node_cover], [train_pos_labels], len(postag_map),
+                                                 w2v_model_filtered.vectors.shape[0],
+                                                 [target_data_loader_train], [train_data_loader_bigbatch], DataEncoder,
+                                                 target_train_treshold=threshold, type_check=type_check)
+    # res_ = torch.load(
+    #     f'../external_repos/GNN-POSTAG/dataset/gdfa_final/tag_frequencies_th{threshold}_typchk{type_check}.torch.bin')
     tag_frequencies, tag_frequencies_target, pos_node_cover_exts, pos_label_exts, tag_based_stats = res_
     train_pos_node_covers_ext, train_pos_labels_ext = pos_node_cover_exts[0], pos_label_exts[0]
 
@@ -668,6 +683,7 @@ if __name__ == "__main__":
     tag_frequencies_copy[torch.logical_and(word_frequencies_target > 0.1, word_frequencies_target < 3), :] = 0.0000001
 
     # We have to give uniform noise to some training examples to prevent the model from returning one of the most frequent tags always!!
+    # TODO: Increase strength to deal with class imbalance
     uniform_noise = torch.BoolTensor(tag_frequencies.size(0))
     uniform_noise[:] = True
     shuffle_tensor = torch.randperm(tag_frequencies.size(0))[:int(tag_frequencies.size(0) * 0.7)]
