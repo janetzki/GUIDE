@@ -13,7 +13,7 @@ import pandas as pd
 from nltk import WordNetLemmatizer, pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus.reader.wordnet import WordNetError
-from polyglot.text import Text
+# from polyglot.text import Text
 from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import Whitespace

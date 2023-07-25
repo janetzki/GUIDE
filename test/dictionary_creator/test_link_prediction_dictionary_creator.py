@@ -29,6 +29,11 @@ class TestLinkPredictionDictionaryCreator(AbstractTestDictionaryCreator):
                          sorted(dc_new.strength_by_lang_by_wtxt_by_lang.items(), key=lambda x: str(x)))
         self._check_if_edge_weights_doubled(self.dc)
         self._check_if_edge_weights_doubled(dc_new)
+
+        # all eng words should be lemmatized
+        self.assertFalse('called' in self.dc.words_by_text_by_lang['eng'])
+        self.assertFalse('was' in self.dc.words_by_text_by_lang['eng'])
+
         return dc_new
 
     def setUp(self) -> None:
