@@ -1,6 +1,5 @@
-import time
-
 import os
+import time
 
 import networkx as nx
 
@@ -684,4 +683,4 @@ class TestLinkPredictionDictionaryCreatorSlow(TestLinkPredictionDictionaryCreato
     # This class is for slower test cases.
     def test_full_pipeline_without_loading_and_with_all_sds_and_with_link_prediction(self):
         self._run_full_pipeline_twice(check_isomorphism=False, load_1=False, save_1=False, load_2=False, save_2=False,
-                                      sd_path_prefix='../semdom extractor/output/semdom_qa_clean')
+                                      sd_path_prefix='/data/4_semdoms/semdom_qa_clean')
