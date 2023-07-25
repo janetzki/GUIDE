@@ -9,6 +9,7 @@ class TfidfDictionaryCreator(DictionaryCreator):
     STEPS = [
         '_preprocess_data',
         '_map_words_to_qids',
+        '_remove_stop_words',
         '_train_tfidf_based_model',
         '_evaluate',
     ]
@@ -45,5 +46,6 @@ class TfidfDictionaryCreator(DictionaryCreator):
     def create_dictionary(self, load=False, save=False):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
+        self._execute_and_track_state(self._remove_stop_words, load=load, save=save)
         self._execute_and_track_state(self._train_tfidf_based_model, load=load, save=save)
         self._execute_and_track_state(self._evaluate, print_reciprocal_ranks=False)
