@@ -1,5 +1,4 @@
 import gc
-import itertools
 import math
 import os
 import pprint
@@ -7,8 +6,6 @@ import random
 import re
 from collections import defaultdict, deque
 from functools import partial
-from multiprocessing import cpu_count
-from multiprocessing.pool import ThreadPool as Pool
 
 import _pickle as cPickle
 import editdistance as editdistance
@@ -25,15 +22,10 @@ import torch_geometric.transforms as T
 import wandb
 from matplotlib import colors
 from matplotlib.patches import Patch
-from networkx.drawing.nx_agraph import graphviz_layout
 from sklearn.metrics import roc_curve, precision_score, recall_score, f1_score
-from torch.nn import Dropout, Linear
-# from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import Data
-from torch_geometric.loader import NeighborLoader, LinkNeighborLoader
-from torch_geometric.nn import GCNConv, GATv2Conv
-from torch_geometric.utils import subgraph
-from torch_geometric.utils import to_networkx
+from torch_geometric.loader import NeighborLoader
+from torch_geometric.nn import GCNConv
 from tqdm import tqdm
 
 from src.dictionary_creator.link_prediction_dictionary_creator import LinkPredictionDictionaryCreator
@@ -115,46 +107,6 @@ class F1_Loss(torch.nn.Module):
         return 1 - f1
 
 
-class Precision_Loss(torch.nn.Module):
-    # Like F1_Loss, but with a higher weight on precision
-
-    def __init__(self, epsilon=1e-7):
-        super().__init__()
-        self.epsilon = epsilon
-
-    def forward(self, y_pred, y_true, unknown_ids):
-        # assert y_pred.ndim == 2
-        # assert y_true.ndim == 1
-        # y_true = F.one_hot(y_true, 2).to(torch.float32)
-        y_pred = F.sigmoid(y_pred)
-
-        tp = (y_true * y_pred)
-        # tn = ((1 - y_true) * (1 - y_pred))
-        fp = ((1 - y_true) * y_pred)
-        fn = (y_true * (1 - y_pred))
-
-        # do not count positives and negatives at unknown ids
-        # use unknown_ids as two-dimensional mask
-        tp[unknown_ids] = 0
-        fp[unknown_ids] = 0
-        fn[unknown_ids] = 0
-
-        tp = tp.sum().to(torch.float32)
-        fp = fp.sum().to(torch.float32)
-        fn = fn.sum().to(torch.float32)
-
-        precision = tp / (tp + fp + self.epsilon)
-        recall = tp / (tp + fn + self.epsilon)
-
-        if precision >= recall:
-            precision = precision.clamp(min=self.epsilon, max=1 - self.epsilon)
-            return 1 - precision
-        else:
-            f1 = 2 * (precision * recall) / (precision + recall + self.epsilon)
-            f1 = f1.clamp(min=self.epsilon, max=1 - self.epsilon)
-            return 1 - f1
-
-
 class SoftPrecision(torch.nn.Module):
     # Only precision, does not make sense as loss function
     def __init__(self, epsilon=1e-7):
@@ -204,7 +156,6 @@ class SoftRecall(torch.nn.Module):
 
 
 f1_loss_function = F1_Loss().cuda()
-precision_loss_function = Precision_Loss().cuda()
 soft_precision_function = SoftPrecision().cuda()
 soft_recall_function = SoftRecall().cuda()
 
@@ -219,85 +170,13 @@ def get_neg_edges_for_sd(word_idxs, forbidden_edges, sd_idx):
     return neg_edges
 
 
-class GNNEncoder(torch.nn.Module):
-    # https://github.com/pyg-team/pytorch_geometric/blob/master/examples/hetero/hetero_link_pred.py
-    def __init__(self, hidden_channels, out_channels, dropout, metadata):
-        super().__init__()
-        # self.dropout = Dropout(dropout)
-
-        # heterogenous graph
-        # self.conv1 = SAGEConv((-1, -1), hidden_channels)
-        # self.conv2 = SAGEConv((-1, -1), out_channels)
-
-        self.conv1 = GATv2Conv((-1, -1), out_channels, dropout=dropout, metadata=metadata, add_self_loops=False)
-        # self.conv2 = GATv2Conv((-1, -1), out_channels, dropout=dropout, metadata=metadata, add_self_loops=False)
-        # self.conv3 = SAGEConv((-1, -1), out_channels)
-
-        # self.conv1 = FastRGCNConv(in_channels, hidden_channels, num_relations=num_relations)
-        # self.conv2 = FastRGCNConv(hidden_channels, hidden_channels, num_relations=num_relations)
-        # self.conv3 = FastRGCNConv(hidden_channels, out_channels, num_relations=num_relations)
-
-    def forward(self, x_dict, edge_index_dict):
-        # z_dict = self.dropout(x_dict)
-        # z_dict = self.conv1(x_dict, edge_index_dict).relu()
-        # z_dict = self.conv2(z_dict, edge_index_dict)  # .relu()
-        # z_dict = self.conv3(z_dict, edge_index_dict)  # .relu()
-
-        z_dict = self.conv1(x_dict, edge_index_dict).relu()
-        # z_dict = self.conv2(z_dict, edge_index_dict)
-
-        # z = self.lin(z)
-        return z_dict
-
-
-class EdgeDecoder(torch.nn.Module):
-    # https://github.com/pyg-team/pytorch_geometric/blob/master/examples/hetero/hetero_link_pred.py
-    def __init__(self, hidden_channels, dropout):
-        super().__init__()
-        self.dropout = Dropout(dropout)
-        self.lin1 = Linear(1624 + hidden_channels, hidden_channels)
-        self.lin2 = Linear(hidden_channels, 1)
-
-    def forward(self, x_dict, z_dict, edge_label_index):
-        sd_idxs, word_idxs = edge_label_index
-        word_embeddings = z_dict['word'][word_idxs]
-        word_embeddings = self.dropout(word_embeddings)
-        sd_representation = x_dict['semantic_domain'][sd_idxs]  # torch.zeros((len(sd_idxs), 1624)).to('cuda')
-        z = torch.cat([sd_representation, word_embeddings], dim=-1)
-        z = self.lin1(z).relu()
-        z = self.lin2(z)
-        return z.view(-1)
-        # src, dst = edge_label_index
-        # return (z[src] * z[dst]).sum(dim=-1)  # product of a pair of nodes on each edge
-
-
 class Model(torch.nn.Module):
     # https://towardsdatascience.com/graph-neural-networks-with-pyg-on-node-classification-link-prediction-and-anomaly-detection-14aa38fe1275
     def __init__(self, in_channels, out_channels, bias):
         super().__init__()
         self.plot_file_paths = []
-        # assert num_layers == 1
-        # assert dropout == 0.0
-        # self.dropout = Dropout(dropout)
-        # self.encoder = GNNEncoder(hidden_channels, out_channels, dropout, metadata)
-        # self.encoder = to_hetero(self.encoder, metadata, aggr='sum')
-        # self.decoder = EdgeDecoder(out_channels, dropout)
 
         self.conv1 = GCNConv(in_channels, out_channels, add_self_loops=False, normalize=False, improved=True, bias=bias)
-        # self.conv2 = GCNConv(hidden_channels, hidden_channels, add_self_loops=False, improved=True)
-        # self.conv3 = GCNConv(hidden_channels, out_channels, add_self_loops=False, improved=True)
-
-        # self.lin = torch.nn.Linear(in_channels, out_channels, bias=False)
-
-        # self.conv1 = TransformerConv(in_channels, hidden_channels, heads=1, dropout=dropout)
-        # self.conv2 = TransformerConv(hidden_channels, hidden_channels, heads=1, dropout=dropout)
-        # self.conv3 = TransformerConv(hidden_channels, out_channels, heads=1, dropout=dropout)
-
-        # self.conv1 = GATConv(in_channels, hidden_channels, heads=1, dropout=dropout) # supports no edge_weight
-        # self.conv2 = GATConv(hidden_channels, out_channels, heads=1, dropout=dropout)
-
-        # todo: try out DNAConv https://github.com/pyg-team/pytorch_geometric/blob/ae84a38f14591ba9b8ce64e704e04ea1271c3b78/examples/dna.py#L8
-        # self.conv1 = DNAConv(in_channels, heads=1, dropout=dropout, add_self_loops=False)
 
         # Smart initialize weight matrix
         offset = in_channels - out_channels
@@ -308,28 +187,15 @@ class Model(torch.nn.Module):
                 # # Set (weighted) node degree feature
                 # self.conv1.lin.weight[x][0] = 0.01
                 # self.conv1.lin.weight[x][1] = 0.01
+
         # Initialize bias vector
         with torch.no_grad():
             torch.nn.init.constant_(self.conv1.bias, -5.0)  # -3.0)
+
         # self.visualize_weights('initial')
 
     def forward(self, x, edge_index, edge_weight):
-        # z = self.encode(x, edge_index, edge_weight)
-        # return self.decode(z, edge_label_index)
-
-        # z_dict = self.encoder(x_dict, edge_index_dict)
-        # return self.decoder(x_dict, z_dict, edge_label_index)
-
-        # z = self.dropout(x)
-        z = self.conv1(x, edge_index, edge_weight)  # .relu()
-        # z = self.conv2(z, edge_index)
-
-        # debugging:
-        # x = torch.zeros(1631).to('cuda')
-        # x[100] = 1
-        # print(self.lin(x))
-
-        # z = self.lin(x)
+        z = self.conv1(x, edge_index, edge_weight)
         return z
 
     def visualize_weights(self, title, epoch=None, loss=None, plot_path=None):
@@ -441,17 +307,13 @@ class EarlyStopper:
 
 
 class LinkPredictor(object):
-    # TARGET_EDGE_TYPE = ('semantic_domain', 'has', 'word')
-
     def __init__(self, dc, target_langs, config, graph_path, ignored_langs=None):
         self.dc = dc
         self.wandb_original_run_name = wandb.run.name
-        # self.source_langs = set() # {'eng'}
         self.target_langs = target_langs
         self.all_langs = dc.target_langs
         self.ignored_langs = {} if ignored_langs is None else ignored_langs
-        self.gt_langs = self.target_langs  # self.source_langs.union(self.target_langs)
-        # assert len(self.source_langs.intersection(self.target_langs)) == 0  # disjoint sets
+        self.gt_langs = self.target_langs
 
         self.node_labels_training = list(self.gt_langs)
         self.node_labels_training.append('semantic_domain')
@@ -483,7 +345,6 @@ class LinkPredictor(object):
         self.val_data = None
         self.test_data = None
         self.color_masks = None
-
 
     def build_network(self):
         # load graph from file if it exists
@@ -694,12 +555,6 @@ class LinkPredictor(object):
         assert (len(displayed_subgraph.nodes) <= len(
             displayed_subgraph.edges) + 1)  # necessary condition if graph is connected
 
-        # # if nodes > max_nodes, remove cmn nodes
-        # if len(displayed_subgraph.nodes) > max_nodes:
-        #     selected_nodes = [node for node in displayed_subgraph.nodes if
-        #                  graph.nodes[node]['lang'] != 'cmn']
-        #     displayed_subgraph = displayed_subgraph.subgraph(selected_nodes)
-
         # set figure size heuristically
         width = max(6, int(len(selected_nodes) / 2.2))
         plt.figure(figsize=(width, width))
@@ -741,147 +596,27 @@ class LinkPredictor(object):
         plt.title(f'Nodes close to "{node}"')
         plt.show()
 
-    def plot_graph_with_labels(self, graph, title, node_sizes, node_colors, all_edges, target_edges,
-                               n_sample=1000):
-        # sample nodes, node_sizes, and node_colors
-        n_sample = min(n_sample, len(graph.nodes))
-        sampled_nodes = random.sample(self.G.nodes, n_sample)
-        sampled_graph = self.G.subgraph(sampled_nodes)
-        sampled_graph = nx.Graph(sampled_graph)  # unfreeze graph to allow for node adding
-        sampled_node_sizes = [node_sizes[self.node_idx_by_type_by_name[node]] for node in sampled_graph.nodes]
-        sampled_node_colors = [node_colors[self.node_idx_by_type_by_name[node]] for node in sampled_graph.nodes]
-
-        # set figure size heuristically
-        width = max(6, int(len(sampled_graph.nodes()) / 2.2))
-        plt.figure(figsize=(width, width))
-        plt.legend(handles=[Patch(color=self.palette[lang], label=lang) for lang in self.node_labels_all])
-
-        graph_edges = graph.edges
-        if graph is not self.G:
-            # convert edges between ints to edges between node names
-            all_edges = [(self.node_name_by_index[edge[0]], self.node_name_by_index[edge[1]]) for edge in all_edges]
-            target_edges = [(self.node_name_by_index[edge[0]], self.node_name_by_index[edge[1]]) for edge in
-                            target_edges]
-            graph_edges = [(self.node_name_by_index[edge[0]], self.node_name_by_index[edge[1]]) for edge in graph_edges]
-
-        highlighted_positive_edges = [edge for edge in target_edges if
-                                      edge in graph_edges or (edge[1], edge[0]) in graph_edges]
-        highlighted_negative_edges = []
-        if graph is not self.G:
-            highlighted_negative_edges = [edge for edge in graph_edges if
-                                          edge not in all_edges and (edge[1], edge[0]) not in all_edges]
-            for edge in all_edges:
-                if edge[0] in sampled_graph and edge[1] in sampled_graph:
-                    sampled_graph.add_edge(edge[0],
-                                           edge[1])  # add all edges to the graph, so that they are also plotted
-        edge_labels = nx.get_edge_attributes(graph, "relation")
-        pos = graphviz_layout(sampled_graph)  # , k=0.3, iterations=20)
-
-        # Draw nodes with size
-        nx.draw_networkx_nodes(sampled_graph, pos, node_color=sampled_node_colors, node_size=sampled_node_sizes)
-        nx.draw_networkx_labels(sampled_graph, pos=pos,
-                                labels={node_name: node_name.split(': ')[1] for node_name in sampled_graph.nodes()})
-        nx.draw_networkx_edges(sampled_graph, pos, edgelist=sampled_graph.edges,
-                               alpha=0.5 if 'decoder' in title else 1.0)
-        nx.draw_networkx_edge_labels(sampled_graph, pos, edge_labels=edge_labels)
-
-        # also draw edges that are not in the graph
-        nx.draw_networkx_edges(sampled_graph, pos, edgelist=highlighted_positive_edges, edge_color="green", width=3)
-        nx.draw_networkx_edges(sampled_graph, pos, edgelist=highlighted_negative_edges, edge_color="red", width=3)
-
-        plt.title(title)
-        plt.show()
-
-    def convert_to_networkx(self, graph, n_sample=100):
-        g = to_networkx(graph, node_attrs=["x"], to_undirected=True)
-        #    y = graph.y.numpy()
-
-        if len(g.nodes) > n_sample:
-            sampled_nodes = random.sample(g.nodes, n_sample)
-            g = g.subgraph(sampled_nodes)
-        #        y = y[sampled_nodes]
-
-        return g  # , y
-
-    def add_backward_edges(self, data):
-        # todo: use T.ToUndirected() instead or don't use this at all
-        data.edge_index = torch.cat([data.edge_index, data.edge_index.flip(0)], dim=1)
-
-        # deduplicate edges
-        data.edge_index = torch.unique(data.edge_index, dim=1)
-
-        # build edge weights
-        data.edge_weight = torch.ones(data.edge_index.shape[1], dtype=torch.float32)
-        for i in range(data.edge_index.shape[1]):
-            u, v = data.edge_index[:, i]
-            u = u.item()
-            v = v.item()
-            edge_weight = self.G.edges[(self.node_name_by_index[u], self.node_name_by_index[v])].get("weight")
-            data.edge_weight[i] = edge_weight
-
-    def convert_edge_label_index_to_networkx(self, graph):
-        graph_copy = graph.clone()
-        graph_copy.edge_index = graph_copy.edge_label_index
-        self.add_backward_edges(graph_copy)
-        g = to_networkx(graph_copy, node_attrs=["x"], to_undirected=True)
-        return g
-
-    def l1_regularization(self, model):
-        # https://stackoverflow.com/a/66543549/8816968
-        l1_lambda = 0.001
-        l1_norm = sum(torch.linalg.norm(p, 1) for p in model.parameters())
-        return l1_lambda * l1_norm
-
     def train(self):
         ys = []
         y_hats = []
-        # masks = []
         node_idxs = []
         self.model.train()
         for train_loader in self.train_loaders:
             for batch in train_loader:
-                #     assert batch.node_stores[0].num_nodes == 1624
-                # for mask in tqdm(self.color_masks):
                 self.optimizer.zero_grad()
-                # batch = self.data
                 batch.to(self.device)
-                # mask = batch.train_mask # & mask
-
-                # neg_sampling_ratio = 100.0
-                # num_pos_edges = len(self.train_data[self.TARGET_EDGE_TYPE].edge_label)
-                # num_neg_edges = neg_sampling_ratio * num_pos_edges
-                # neg_edges = self.sample_neg_edges(num_neg_edges, self.forbidden_neg_train_edges)
-                # self.add_negative_edges(self.train_data, neg_edges)
-
                 x = batch.x.clone()
                 edge_index = batch.edge_index
-                # edge_label_index = batch[self.TARGET_EDGE_TYPE].edge_label_index
                 edge_weight = batch.edge_weight
                 y = batch.y[:batch.batch_size]
-
                 x[:batch.batch_size] = 0  # mask out the nodes to be predicted
-
-                # y_hat = model(x, edge_index) # .index_select(0, torch.tensor(train_indices).to(self.device))
-
-                # z = self.model.encode(x, edge_index, edge_weight, edge_type)
-                # y_hat = self.model.decode(z, edge_label_index).view(-1)
                 y_hat = self.model(x, edge_index, edge_weight)[:batch.batch_size]
-
                 train_loss = self.compute_loss_with_empty_questions(y_hat, y, batch.n_id[:batch.batch_size])
-
-                # link_probs = out.sigmoid()
-                # total_auc += roc_auc_score(y.detach().cpu().numpy(), link_probs.detach().cpu().numpy())
                 ys.append(y.detach().cpu())
                 y_hats.append(y_hat.detach().cpu())
                 node_idxs.append(batch.n_id[:batch.batch_size].detach().cpu())
-                # masks.append(mask.detach().cpu())
-
                 train_loss.backward()
                 self.optimizer.step()
-
-                # # Remove negative edges from train_data
-                # self.train_data[self.TARGET_EDGE_TYPE].edge_label = self.train_data[self.TARGET_EDGE_TYPE].edge_label[:num_pos_edges]
-                # self.train_data[self.TARGET_EDGE_TYPE].edge_label_index = self.train_data[self.TARGET_EDGE_TYPE].edge_label_index[:, :num_pos_edges]
 
         y = torch.cat(ys, dim=0)
         y_hat = torch.cat(y_hats, dim=0)
@@ -889,25 +624,17 @@ class LinkPredictor(object):
         assert (len(y) == len(y_hat))
         assert (len(y) == self.data.train_mask.sum())
         train_loss = self.compute_loss_with_empty_questions(y_hat.to(self.device), y.to(self.device), node_idxs)
-
-        # y = y.cpu().numpy()
-        # y_hat = y_hat.cpu().numpy()
-        # mask = torch.cat(masks, dim=0).detach().cpu().numpy()
-        # y_flat = y.flatten()
-        # y_hat_flat = y_hat.flatten()
-        train_auc = -1.0  # roc_auc_score(y_flat, y_hat_flat)
-
-        return train_loss, train_auc
+        return train_loss
 
     def train_link_predictor(self):
         early_stopper = EarlyStopper(patience=self.config['patience'], warm_up=self.config['warm_up'])
         for epoch in range(1, self.config['epochs'] + 1):
             plots = ['weights'] if epoch % 10 == 0 else []
-            val_loss, val_auc, _, _, _, precision, recall, _, f1, f1_loss, val_soft_precision, val_soft_recall = self.evaluate(
+            val_loss, _, _, _, precision, recall, _, f1, f1_loss, val_soft_precision, val_soft_recall = self.evaluate(
                 self.data.val_mask, threshold=0.99, compute_ideal_threshold=False, plots=plots, num_frame=epoch)
 
-            train_loss, train_auc = self.train()
-            wandb.log({"train loss": train_loss, "train AUC": train_auc, "val loss": val_loss, "val AUC": val_auc,
+            train_loss = self.train()
+            wandb.log({"train loss": train_loss, "val loss": val_loss,
                        "val soft precision": val_soft_precision, "val soft recall": val_soft_recall})
             wandb.watch(self.model)
 
@@ -1089,7 +816,6 @@ class LinkPredictor(object):
         y_hats = []
         ys = []
         node_idxs = []
-        # edge_label_indexes = []
 
         # eval_loader = LinkNeighborLoader(
         #     data=eval_data.to(self.device),
@@ -1111,28 +837,15 @@ class LinkPredictor(object):
 
         for eval_loader in tqdm(eval_loaders, desc='Evaluating...', total=len(eval_loaders)):
             for batch in eval_loader:
-                #         assert batch.node_stores[0].num_nodes == 1624
-                #     batch = self.data
                 x = batch.x.clone()
                 edge_index = batch.edge_index
-                # sub_mask = batch.mask
-                # edge_label_index = batch[self.TARGET_EDGE_TYPE].edge_label_index
                 edge_weight = batch.edge_weight
-                # edge_type = eval_data.edge_type
-                # assert self.convert_edge_index_to_set_of_tuples(edge_label_index).issubset(
-                #     self.convert_edge_index_to_set_of_tuples(eval_loader.data[self.TARGET_EDGE_TYPE].edge_label_index))
-
                 x[:batch.batch_size] = 0  # mask out the nodes to be predicted
-
-                # z = self.model.encode(x, edge_index, edge_weight, edge_type)
                 y_hat = self.model(x, edge_index, edge_weight)[
-                        :batch.batch_size]  # self.model.decode(z, edge_label_index).view(-1)
-                # y_hats.append(self.model(x_dict, edge_index_dict, edge_label_index))
+                        :batch.batch_size]
                 y_hats.append(y_hat.detach().cpu())
-                # ys.append(batch[self.TARGET_EDGE_TYPE].edge_label.to(self.device))
                 y = batch.y[:batch.batch_size]
                 ys.append(y.detach().cpu())
-                # edge_label_indexes.append(edge_label_index)
                 node_idxs.append(batch.n_id[:batch.batch_size].detach().cpu())
 
         y_hat = torch.cat(y_hats, dim=0)
@@ -1142,8 +855,6 @@ class LinkPredictor(object):
         assert (len(y) == len(y_hat))
         assert (len(y) == len(node_idxs))
         assert (len(y) == mask.sum())
-        # edge_label_index = torch.cat(edge_label_indexes, dim=1)
-        # assert self.convert_edge_index_to_set_of_tuples(edge_label_index) == self.convert_edge_index_to_set_of_tuples(eval_loader.data[self.TARGET_EDGE_TYPE].edge_label_index)
         print(f'Computing evaluation metrics for {len(y)} words...')
         eval_loss = self.compute_loss_with_empty_questions(y_hat, y, node_idxs)
         soft_precision = self.compute_loss_with_empty_questions(y_hat, y, node_idxs,
@@ -1152,18 +863,12 @@ class LinkPredictor(object):
                                                              soft_recall_function)
         f1_loss = -1.0  # f1_loss_function(y_hat, y)
         link_probs = y_hat.sigmoid()
-        # y = eval_data[self.TARGET_EDGE_TYPE].edge_label.cpu().numpy()
-        # assert (abs(self.model(self.data.x, self.data.edge_index, self.data.edge_weight)[
-        #                 # assert that the batches lead to the same result, ignoring numerical errors
-        #                 mask].sigmoid().sum().item() - link_probs.sum().item()) < 10.0)
         y_tensor = y.cpu()
         link_probs_tensor = link_probs.cpu()
         y = y.cpu().numpy()
         link_probs = link_probs.cpu().numpy()
-        # mask = mask.cpu()
         y_flat = y.flatten()
         link_probs_flat = link_probs.flatten()
-        auc = -1.0  # roc_auc_score(y_flat, link_probs_flat) if y_flat.sum() > 0 else 0.0
         ideal_threshold = -1
 
         if compute_ideal_threshold:
@@ -1177,7 +882,6 @@ class LinkPredictor(object):
         false_positives = false_negatives = precision = recall = acc = f1 = -1.0
         if compute_additional_metrics:
             print(f'Eval loss: {eval_loss.item():.2f}')
-            print(f'AUC: {auc:.2f}')
             num_predictions = len(y_flat)
             print(f'Samples: {mask.sum()} words, {num_predictions} predictions')
             print(f'Ideal threshold: {ideal_threshold:.2f}')
@@ -1202,8 +906,6 @@ class LinkPredictor(object):
             print(f'Recall: {recall:.2f}')
             f1 = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0.0
             print(f'F1: {f1:.2f}')
-            # bacc = balanced_accuracy_score(y, y_hat >= ideal_threshold)
-            # print(f'Accuracy: {acc:.2f}')
 
             if 'explain false positives' in plots:
                 self.explain_false_positives(false_positives_tensor, node_idxs)
@@ -1231,100 +933,11 @@ class LinkPredictor(object):
         if print_human_readable_predictions:
             self.print_human_readable_predictions(y, y_hat, link_probs, None, threshold, word_idx_map=node_idxs)
 
-        return eval_loss, auc, ideal_threshold, false_positives, false_negatives, precision, recall, acc, f1, f1_loss, soft_precision, soft_recall
+        return eval_loss, ideal_threshold, false_positives, false_negatives, precision, recall, acc, f1, f1_loss, soft_precision, soft_recall
 
     @staticmethod
     def convert_edge_index_to_set_of_tuples(edge_index):
         return {(u, v) for u, v in edge_index.transpose(0, 1).tolist()}
-
-    def get_all_neg_edges(self):
-        forbidden_edges = self.convert_edge_index_to_set_of_tuples(self.data[self.TARGET_EDGE_TYPE].edge_index)
-        func = partial(get_neg_edges_for_sd, self.word_node_idx_by_name.values(), forbidden_edges)
-        with Pool(processes=cpu_count()) as pool:
-            neg_edges_by_sd = tqdm(pool.imap(func, self.sd_node_idx_by_name.values()),
-                                   desc=f'Generating negative edges ({cpu_count()} processes)',
-                                   total=len(self.sd_node_idx_by_name))
-            return list(itertools.chain(*neg_edges_by_sd))  # flatmap
-
-    def sample_neg_edges(self, num_neg_edges, forbidden_edges=None):
-        if forbidden_edges is None:
-            forbidden_edges = set()
-        forbidden_edges |= self.convert_edge_index_to_set_of_tuples(self.data[self.TARGET_EDGE_TYPE].edge_index)
-
-        # generate edges that are not in the graph and not in val_test_edges
-        neg_edges = set()
-
-        # # filter nodes with at least one semantic domain node as neighbor
-        # sd_neighbor_nodes_by_lang = defaultdict(set)
-        # for lang in self.target_langs:
-        #     for node in self.word_node_idxs_by_lang[lang]:
-        #         node_name = self.word_node_names[node]
-        #         neighbors = [n for n in self.G.neighbors(node_name) if self.G.nodes[n]["lang"] == "semantic_domain"]
-        #         if len(neighbors) > 0:
-        #             sd_neighbor_nodes_by_lang[lang].add(node)
-        # # convert sets to lists
-        # sd_neighbor_nodes_by_lang = {lang: list(nodes) for lang, nodes in sd_neighbor_nodes_by_lang.items()}
-        #
-        # # Generate negative edges for words with connected SD nodes.
-        # # Reason: Training with word nodes without connected SDs is too easy.
-        # while len(neg_edges) < 0.8 * num_neg_edges:
-        #     lang = random.choice(list(self.target_langs))
-        #     node1 = random.choice(list(self.sd_node_idx_by_name.values()))
-        #     node2 = random.choice(sd_neighbor_nodes_by_lang[lang])
-        #     if (node1, node2) not in forbidden_edges and (node2, node1) not in forbidden_edges:
-        #         neg_edges.add((node1, node2))
-
-        while len(neg_edges) < num_neg_edges:
-            lang = random.choice(list(self.target_langs))
-            node1 = random.choice(list(self.sd_node_idx_by_name.values()))
-            node2 = random.choice(self.word_node_idxs_by_lang[lang])
-            if (node1, node2) not in forbidden_edges and (node2, node1) not in forbidden_edges:
-                neg_edges.add((node1, node2))
-
-        return list(neg_edges)
-
-    def add_negative_edges(self, data, neg_edges):
-        print(f'Adding {len(neg_edges)} negative edges...')
-        data[self.TARGET_EDGE_TYPE].edge_label_index = torch.cat(
-            [data[self.TARGET_EDGE_TYPE].edge_label_index, torch.tensor(neg_edges).transpose(0, 1).to(self.device)],
-            dim=1)
-
-        # # assert that there is no duplicate in the edge_label_index (no edge is positive and negative or added twice)
-        # assert data[self.TARGET_EDGE_TYPE].edge_label_index.size(1) == \
-        #        len(self.convert_edge_index_to_set_of_tuples(data[self.TARGET_EDGE_TYPE].edge_label_index))
-
-        data[self.TARGET_EDGE_TYPE].edge_label = torch.cat(
-            [data[self.TARGET_EDGE_TYPE].edge_label, torch.zeros(len(neg_edges), dtype=torch.long).to(self.device)])
-
-    def add_negative_edges_to_data_split(self, add_negative_edges_to_train, neg_sampling_ratio=1.0):
-        train_edge_label = self.train_data[self.TARGET_EDGE_TYPE].edge_label
-        val_edge_label = self.val_data[self.TARGET_EDGE_TYPE].edge_label
-        test_edge_label = self.test_data[self.TARGET_EDGE_TYPE].edge_label
-
-        num_pos_edges = len(train_edge_label) + len(val_edge_label) + len(test_edge_label)
-        if neg_sampling_ratio == 'all':
-            neg_edges = self.get_all_neg_edges()
-        else:
-            # sample the negative edges
-            num_neg_edges = num_pos_edges * neg_sampling_ratio
-            neg_edges = self.sample_neg_edges(num_neg_edges)
-
-        # shuffle the negative edges
-        random.shuffle(neg_edges)
-
-        # split the negative edges into train, val, and test
-        train_num_neg_edges = int(len(train_edge_label) / num_pos_edges * len(neg_edges))
-        val_num_neg_edges = int(len(val_edge_label) / num_pos_edges * len(neg_edges))
-        train_neg_edges = neg_edges[:train_num_neg_edges]
-        val_neg_edges = neg_edges[train_num_neg_edges:train_num_neg_edges + val_num_neg_edges]
-        test_neg_edges = neg_edges[train_num_neg_edges + val_num_neg_edges:]
-
-        # add the negative edges to the train, val, and test data
-        if add_negative_edges_to_train:
-            self.add_negative_edges(self.train_data, train_neg_edges)
-        self.add_negative_edges(self.val_data, val_neg_edges)
-        self.add_negative_edges(self.test_data, test_neg_edges)
-        print(f'Added {len(neg_edges)} negative edges in total.')
 
     def save_model(self, path):
         path = os.path.join(self.config['model_path'], path)
@@ -1359,9 +972,6 @@ class LinkPredictor(object):
                 image = imageio.v2.imread(file_path)
                 writer.append_data(image)
 
-        # # Remove the files
-        # for filename in self.model.plot_file_paths:
-        #     os.remove(filename)
         print('Done creating gif.')
 
     @torch.no_grad()
@@ -1456,12 +1066,6 @@ class LinkPredictor(object):
             shuffle=True,
             subgraph_type='bidirectional',
         )
-        # for neighbor in neighbors:
-        # neighbor_mask = torch.ones(len(self.data.x), dtype=torch.bool)
-        # neighbor_idx = self.word_node_idx_by_name[neighbor]
-        # neighbor_mask[neighbor_idx] = False
-        # neighbor_mask = neighbor_mask.to(self.device)
-        # pred_data.x[neighbor_mask] = 0
 
         assert (len(node_loader) == 1)
         batch = next(iter(node_loader))
@@ -1473,7 +1077,6 @@ class LinkPredictor(object):
         y_hat = self.model(batch.x, batch.edge_index, batch.edge_weight)
         y_hat = y_hat[:batch.batch_size].detach().cpu()
         base_prediction = y_hat[0][qid_idx]
-        # print(f'Explaining false positive {node_name} -> {qid_name} (raw score: {base_prediction.item():.1f}, bias: {self.model.conv1.bias[qid_idx]:.1f})')
 
         qid_diff_by_neighbor = {}
         num_neighbors = len(batch.x) - batch.batch_size
@@ -1671,22 +1274,9 @@ class LinkPredictor(object):
     def init_model(self, data):
         self.model = Model(
             in_channels=data.num_features,
-            # hidden_channels=self.config['num_hidden'],
-            out_channels=data.y.size(1),  # config['embedding_size'],
+            out_channels=data.y.size(1),
             bias=self.config['bias'],
-            # num_layers=self.config['num_layers'],
-            # dropout=self.config['dropout'],
-            # num_relations=data.num_relations,
-            # metadata=data.metadata(),
         )
-
-        # self.model = GAT(in_channels=data.num_features,
-        #             hidden_channels=self.config['num_hidden'],
-        #             out_channels=data.num_features, #num_classes
-        #             heads=self.config['num_heads'],
-        #             num_layers=self.config['num_layers'],
-        #             dropout=self.config['dropout'],
-        #             dtype=torch.float32)
 
         self.model.to(self.device)
 
@@ -1695,7 +1285,7 @@ class LinkPredictor(object):
         plots = [] if plots is None else plots
 
         print('\nValidation set performance:')
-        _, _, ideal_threshold, _, _, _, _, _, _, _, _, _ = self.evaluate(
+        _, ideal_threshold, _, _, _, _, _, _, _, _, _ = self.evaluate(
             self.data.val_mask, plots, print_human_readable_predictions, True, threshold,
             compute_ideal_threshold=compute_ideal_threshold, print_highest_qid_correlations=False)  # True)
 
@@ -1706,18 +1296,17 @@ class LinkPredictor(object):
             lang_mask = lang_mask.to(self.device)
             lang_mask &= self.data.val_mask.to(self.device)
 
-            _, _, _, _, _, _, _, _, _, _, _, _ = self.evaluate(
+            _, _, _, _, _, _, _, _, _, _, _ = self.evaluate(
                 lang_mask, [], False, True, ideal_threshold if threshold is None else threshold,
                 compute_ideal_threshold=False)
 
         print('\nTest set performance:')
-        test_loss, test_auc, _, false_positives, false_negatives, test_precision, test_recall, acc, test_f1, f1_loss, _, _ = self.evaluate(
+        test_loss, _, false_positives, false_negatives, test_precision, test_recall, acc, test_f1, f1_loss, _, _ = self.evaluate(
             self.data.test_mask, [], print_human_readable_predictions, True,
             ideal_threshold if threshold is None else threshold, compute_ideal_threshold=False)
-        # print(
-        #     f"Test Loss: {test_loss:.3f}, Test AUC: {test_auc:.3f}, Test F1 Loss: {f1_loss:.3f}, ideal threshold: {ideal_threshold:.2f}, false positives: {false_positives}, false negatives: {false_negatives}, precision: {precision:.2f}, recall: {recall:.2f}, ACC: {acc:.2f}, F1: {f1:.2f}")
+
         if wandb.run is not None:
-            wandb.log({"test loss": test_loss, "test AUC": test_auc, "test F1 loss": f1_loss,
+            wandb.log({"test loss": test_loss, "test F1 loss": f1_loss,
                        "val ideal threshold": ideal_threshold,
                        "false positives": false_positives, "false negatives": false_negatives,
                        "precision": test_precision,
@@ -1729,105 +1318,15 @@ class LinkPredictor(object):
             self.evaluate(self.data.train_mask, [], print_human_readable_predictions, True,
                           ideal_threshold if threshold is None else threshold, compute_ideal_threshold=False)
 
-        return test_loss, test_auc, ideal_threshold, test_f1, test_precision
+        return test_loss, ideal_threshold, test_f1, test_precision
 
     def split_dataset(self):
-        # split = T.RandomLinkSplit(
-        #     num_val=0.1,
-        #     num_test=0.1,
-        #     is_undirected=True,
-        #     add_negative_train_samples=False,
-        #     #disjoint_train_ratio=0.3,
-        #     neg_sampling_ratio=0.0,  # 2.0
-        #     edge_types=[self.TARGET_EDGE_TYPE],
-        #     rev_edge_types=[('word', 'rev_has', 'semantic_domain')], # todo: fix unequal number of rev edges and forward edges for full graph
-        # )
-        # self.train_data, self.val_data, self.test_data = split(self.data)
-
         split = T.RandomNodeSplit(
             num_val=0.1,
             num_test=0.1,
         )
         self.data = split(self.data)
         print(self.data)
-        return
-
-        self.add_negative_edges_to_data_split(True, 'all')
-
-        print("Validating split...")
-        # assert that there is no overlap in the train, val, test sets
-        train_set = self.convert_edge_index_to_set_of_tuples(self.train_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        val_set = self.convert_edge_index_to_set_of_tuples(self.val_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        test_set = self.convert_edge_index_to_set_of_tuples(self.test_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        union = train_set.union(val_set).union(test_set)
-        assert len(union) == len(train_set) + len(val_set) + len(test_set)
-
-        # assert that there are #words x #domains edges
-        assert len(union) == len(self.sd_node_names) * len(self.word_node_names)
-
-        print("Creating train loader...")
-        self.train_loader = LinkNeighborLoader(
-            # very slow because it cuts the graph into pieces instead of loading it once
-            data=self.train_data.to(self.device),
-            num_neighbors=[-1, -1],  # [-1, -1, -1]  # [20, 10],
-            # neg_sampling_ratio=1.0,
-            edge_label_index=(
-                self.TARGET_EDGE_TYPE, self.train_data[self.TARGET_EDGE_TYPE].edge_label_index.to(self.device)),
-            edge_label=self.train_data[self.TARGET_EDGE_TYPE].edge_label.to(self.device),
-            batch_size=self.config['batch_size'],  # number of edges per batch
-            shuffle=True,
-            subgraph_type='bidirectional',
-        )
-
-        # # put the missing nodes back (i.e., the source lang nodes)
-        # train_data.x = x
-        # val_data.x = x
-        # test_data.x = x
-
-        # print('Target data before splitting:', data)
-        # print('Train data:', train_data)
-        # print('Val data:', val_data)
-        # print('Test data:', test_data)
-        #
-        # print('\n')
-        # print('Train data edge_label and edge_label_index:', train_data[self.TARGET_EDGE_TYPE].edge_label, train_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        # print('Val data edge_label and edge_label_index:', val_data[self.TARGET_EDGE_TYPE].edge_label, val_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        # print('Test data edge_label and edge_label_index:', test_data[self.TARGET_EDGE_TYPE].edge_label, test_data[self.TARGET_EDGE_TYPE].edge_label_index)
-
-        # # convert tensors to set of tuples and add them to the forbidden_neg_train_edges
-        # val_label_edges = self.convert_edge_index_to_set_of_tuples(self.val_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        # test_label_edges = self.convert_edge_index_to_set_of_tuples(self.test_data[self.TARGET_EDGE_TYPE].edge_label_index)
-        # self.forbidden_neg_train_edges = val_label_edges | test_label_edges
-
-        # # add edge_index to train_data, val_data, test_data
-        # train_data.edge_index = torch.cat([train_data.edge_index, alignment_edge_index], dim=1)
-        # self.add_backward_edges(train_data)
-        #
-        # val_data.edge_index = torch.cat([val_data.edge_index, alignment_edge_index], dim=1)
-        # self.add_backward_edges(val_data)
-        #
-        # test_data.edge_index = torch.cat([test_data.edge_index, alignment_edge_index], dim=1)
-        # self.add_backward_edges(test_data)
-
-        print('\n')
-        print('Train data:', self.train_data, '\n')
-        print('Val data:', self.val_data, '\n')
-        print('Test data:', self.test_data, '\n')
-
-    def add_hop_edges_to_graph(self, graph, max_hops=2):
-        # add edges for 2-hops to the graph (number of conv layers)
-        for node in tqdm(graph, desc=f'Adding {max_hops}-hop edges to graph'):
-            visited = {node: 0}
-            queue = deque([(node, 0)])
-            while queue:
-                current_node, depth = queue.popleft()
-                if depth < max_hops:  # We only want to explore nodes at this max depth
-                    for neighbor in graph[current_node]:
-                        if neighbor not in visited:
-                            visited[neighbor] = depth + 1
-                            queue.append((neighbor, depth + 1))
-                            if visited[neighbor] in range(2, max_hops + 1):
-                                graph.add_edge(node, neighbor)
 
     def partition_graph(self):
         # solve n-color problem for multiple hops
@@ -1835,8 +1334,6 @@ class LinkPredictor(object):
 
         # remove sd nodes
         hop_graph.remove_nodes_from(self.sd_node_names)
-
-        # self.add_hop_edges_to_graph(hop_graph)
 
         print('Partitioning graph...')
         color_by_node = nx.greedy_color(hop_graph)
@@ -1971,41 +1468,25 @@ class LinkPredictor(object):
                 qid_feature[self.word_node_idx_by_name[node]])
 
         # concatenate the features
-        # x = torch.cat((qid_count_feature, degree_feature, weighted_degree_feature, lang_feature, qid_feature), dim=1)
         x = torch.cat((qid_count_feature, degree_feature, weighted_degree_feature, qid_feature), dim=1)
 
-        # self.data = HeteroData()
-        # self.data['semantic_domain'].x = torch.eye(len(semantic_domain_nodes), device=self.device)
-        # self.data['word'].x = x # lang_feature
-
-        target_edge_index = torch.tensor(sd_edges).transpose(0, 1)
         alignment_edge_index = torch.tensor(alignment_edges).transpose(0, 1)
         alignment_edge_weight = torch.tensor(
             [self.G.edges[(self.word_node_names[edge[0]], self.word_node_names[edge[1]])].get("weight",
                                                                                               0)
              for edge in alignment_edges]).type(torch.FloatTensor)
 
-        # data['semantic_domain', 'has', 'semantic_domain'].edge_index = ...
-        # self.data['word', 'aligns_with', 'word'].edge_index = alignment_edge_index
         self.data = Data(x=x, edge_index=alignment_edge_index, y=qid_feature, edge_weight=alignment_edge_weight)
-        # add an attribute that stores the language of each node
 
         self.data = T.ToUndirected()(self.data)
-        # del self.data['word', 'rev_has', 'semantic_domain'].edge_label  # remove "reverse" label
         self.data = self.data.to(self.device)
         print(self.data)
-        # self.export_dataset()
         # self.plot_class_counts()
 
         if 0 and not torch.cuda.is_available():  # hack to run this only on my laptop
             self.palette = sns.color_palette('pastel')
             self.palette += self.palette
             self.palette = {lang: color for lang, color in zip(self.node_labels_all, self.palette)}
-            node_colors = [self.palette[self.G.nodes[node]["lang"]]
-                           # if "lang" in self.G.nodes[node] else self.palette[lang_by_node_idx[node]]
-                           for node in self.G.nodes]
-            node_sizes = [self.G.nodes[node]["size"] * 100 if "size" in self.G.nodes[node] else 100
-                          for node in self.G.nodes]
 
             self.plot_subgraph(self.G, 'eng: dog')
             self.plot_subgraph(self.G, 'eng: water')
@@ -2024,9 +1505,6 @@ class LinkPredictor(object):
             self.plot_subgraph(complete_graph, random.choice(
                 [node for node in complete_graph.nodes if complete_graph.nodes[node]["lang"] == "gej"]))
 
-            # plot_graph_with_labels(self.G, "Complete data", node_sizes, node_colors, edges, target_edges, self.palette,
-            #                        node_name_by_index, 100)
-
         self.split_dataset()
         self.partition_graph()
         self.save_dataset()
@@ -2043,48 +1521,6 @@ class LinkPredictor(object):
             (self.data.train_mask.to(self.device) & color_mask.to(self.device)).sum() > 0]
 
         self.criterion = f1_loss_function
-
-        return
-
-        if 0 and not torch.cuda.is_available():  # hack to execute this only on my laptop
-            g = self.convert_to_networkx(self.train_data)  # , n_sample=100)
-            self.plot_graph_with_labels(g, "Train data, encoder (edge_index)", node_sizes, node_colors,
-                                        self.G.edges,
-                                        sd_edges, 100)
-            g = self.convert_edge_label_index_to_networkx(self.train_data)
-            self.plot_graph_with_labels(g, "Train data, decoder (edge_label_index)", node_sizes, node_colors,
-                                        self.G.edges, sd_edges, 100)
-
-            g = self.convert_to_networkx(self.val_data)
-            self.plot_graph_with_labels(g, "Val data, encoder (edge_index)", node_sizes, node_colors,
-                                        self.G.edges,
-                                        sd_edges, 100)
-            g = self.convert_edge_label_index_to_networkx(self.val_data)
-            self.plot_graph_with_labels(g, "Val data, decoder (edge_label_index)", node_sizes, node_colors,
-                                        self.G.edges,
-                                        sd_edges, 100)
-
-            g = self.convert_to_networkx(self.test_data)
-            self.plot_graph_with_labels(g, "Test data, encoder (edge_index)", node_sizes, node_colors, self.G.edges,
-                                        sd_edges, 100)
-            g = self.convert_edge_label_index_to_networkx(self.test_data)
-            self.plot_graph_with_labels(g, "Test data, decoder (edge_label_index)", node_sizes, node_colors,
-                                        self.G.edges,
-                                        sd_edges, 100)
-
-    def sample_dataset(self):
-        selected_nodes = torch.tensor(range(10), dtype=torch.long).to(self.device)
-
-        # Extract the subgraph
-        subgraph_data = subgraph(selected_nodes, self.data.edge_index, edge_attr=self.data.edge_weight)
-
-        # Create a new Data object for the subgraph
-        self.data = Data(
-            x=subgraph_data.x,
-            edge_index=subgraph_data.edge_index,
-            edge_weight=subgraph_data.edge_attr,
-            y=subgraph_data.y
-        )
 
     def run_gnn_pipeline(self):
         # torch.manual_seed(1)  # fixed seed for reproducibility
@@ -2122,9 +1558,9 @@ class LinkPredictor(object):
         # self.load_model(path_1)
         path_1 = f"model_{wandb.run.name}.bin"
         self.save_model(path_1)
-        test_loss, test_auc, ideal_threshold, test_f1, test_precision = self.test(eval_train_set=True, threshold=1.00,
-                                                                                  compute_ideal_threshold=False,
-                                                                                  plots=['weights'])
+        test_loss, ideal_threshold, test_f1, test_precision = self.test(eval_train_set=True, threshold=1.00,
+                                                                        compute_ideal_threshold=False,
+                                                                        plots=['weights'])
         if "th-" not in path_1:
             path_2 = path_1[
                      :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
@@ -2137,16 +1573,12 @@ if __name__ == '__main__':
 
     project_name = "GCN node prediction (link semantic domains to target words), 18 langs (nep) dataset"
     wandb.init(
-        # project="GCN node prediction (link semantic domains to target words), eng-fra-ind-hin-spa-gej-deu dataset",
-        # project="GCN node prediction (link semantic domains to target words), eng-fra-ind-por-swa-spa-gej-deu dataset",
-        # project="GCN node prediction (link semantic domains to target words), eng-fra-ind-yor dataset",
         project=project_name,
         config={
             "batch_size": 10000,
             "epochs": 1000,
 
             "bias": True,  # works much better than False
-            # "dropout": 0.5,
             "min_alignment_count": 1,  # 4,
             "min_edge_weight": 0.2,  # 0.2, # 0.1 ==> set batch size to 4000
             "patience": 5,
@@ -2157,66 +1589,14 @@ if __name__ == '__main__':
             "weight_decay": 0.0,  # 0.005,
             "model_path": "data/3_models/",
             "plot_path": "data/8_plots/",
-            # "hidden_channels": config['model']['num_hidden'],
-            # "num_layers": config['model']['num_layers'],
-            # "num_heads": config['model']['num_heads'],
         })
-
-    # sweep_config = {
-    #     'method': 'random',  # grid, random, bayesian
-    #     'metric': {
-    #         'name': 'test loss',
-    #         'goal': 'minimize'
-    #     },
-    #     'parameters': {
-    #         'batch_size': {
-    #             'values': [20000, 10000, 5000]
-    #         },
-    #         'learning_rate': {
-    #             'values': [0.05, 0.005, 0.0005]
-    #         },
-    #         'optimizer': {
-    #             'values': ['adam', 'nadam', 'sgd', 'rmsprop']
-    #         },
-    #         'weight_decay': {
-    #             'values': [0.0, 0.00005, 0.0005, 0.005, 0.05]
-    #         },
-    #         # 'activation': {
-    #         #     'values': ['relu', 'elu', 'selu', 'softmax']
-    #         # }
-    #     }
-    # }
-    # sweep_id = wandb.sweep(sweep_config, entity="sweep", project=project_name)
-
-    # dc = LinkPredictionDictionaryCreator(
-    #     ['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-hin', 'bid-spa', 'bid-gej', 'bid-deu'])
-    # lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'hin', 'spa'}, config,
-    # #                    'data/7_graphs/graph-all-qids-except-missing.cpickle')
-    # #                    'data/7_graphs/graph-10-qids.cpickle')
-    #                    'data/7_graphs/graph.cpickle')
-
-    # dc = LinkPredictionDictionaryCreator(
-    # ['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-por', 'bid-swa', 'bid-spa', 'bid-gej', 'bid-deu'])
-    # lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'por', 'swa', 'spa'}, config,
-    #                    #                   'data/7_graphs/graph-por.cpickle')
-    #                    # 'data/7_graphs/graph_por_normalized-edge-weights_filtered-0.2_missing-questions.cpickle')
-    #                     'data/7_graphs/graph_por_normalized-edge-weights_filtered-3-0.2_missing-questions.cpickle')
-
-    # dc = LinkPredictionDictionaryCreator(
-    # ['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-yor'])
-    # lp = LinkPredictor(dc, {'eng', 'fra', 'ind'}, config,
-    # 'data/7_graphs/graph-yor-all-qids.cpickle')
-    # 'data/7_graphs/graph-yor-50-qids.cpickle')
-    # 'data/7_graphs/graph-yor-normalized-edge-weights-filtered-0.2.cpickle')
 
     dc = LinkPredictionDictionaryCreator(['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-por', 'bid-swa', 'bid-spa',
                                           'bid-hin', 'bid-mal', 'bid-nep', 'bid-deu'])
     # 'bid-yor', 'bid-tpi', 'bid-meu', 'bid-gej'])
-    # 'bid-urd', 'bid-pes', 'bid-mya', 'bid-cmn',
     lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'por', 'swa', 'spa', 'hin', 'mal', 'nep'}
                        , wandb.config,
                        graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_additional_words_15.cpickle')
-    # graph_path=f'data/7_graphs/graph-nep_50-qids_min_alignment_count_{wandb.config["min_alignment_count"]}.cpickle',
     # ignored_langs={'pes', 'urd', 'cmn', 'mya'})
 
     lp.run_gnn_pipeline()
