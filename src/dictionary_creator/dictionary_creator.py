@@ -326,6 +326,23 @@ class DictionaryCreator(ABC):
                 self.verses_by_bid[bid] = bible.readlines()
             assert len(self.verses_by_bid[bid]) == self.num_verses
 
+    def _load_additional_word_qid_mappings(self):
+        path = 'data/4_semdoms/additional_words.xlsx'
+        df = pd.read_excel(path)
+        for index, row in tqdm(df.iterrows(), desc=f'Loading additional word-QID mappings from {path}', total=len(df)):
+            wtxt = str(row.word)
+            lang = row.language
+            qid = row.qid
+            gpt_4_answer = row['GPT-4 answer']
+            if gpt_4_answer == 1:
+                self.words_by_text_by_lang[lang][wtxt].qids.add(qid)
+            if gpt_4_answer == 0 \
+                    and wtxt in self.words_by_text_by_lang[lang] \
+                    and qid in self.words_by_text_by_lang[lang][wtxt].qids:
+                print(lang, wtxt, qid, row['source model'])
+                assert row['source model'][:6] == 'manual'
+                self.words_by_text_by_lang[lang][wtxt].qids.discard(qid)
+
     def _build_sds(self):
         """
         Convert a semantic domain dataframe to a dictionary.
@@ -547,6 +564,7 @@ class DictionaryCreator(ABC):
         self._load_data()
         self._build_sds()
         self._tokenize_verses()
+        self._load_additional_word_qid_mappings()
         self._combine_alignments()
 
     def _add_bidirectional_edge(self, word_1, word_2, count=1):
@@ -609,6 +627,8 @@ class DictionaryCreator(ABC):
 
     def _map_words_to_qids(self):
         # map words in all target language bibles to semantic domains
+        count = 0
+        total = len(self.bids) ** 2 // 2
         for bid_1 in self.bids:
             for bid_2 in self.bids:
                 if bid_1 >= bid_2 and not (bid_1 == self.source_bid and bid_2 == self.source_bid):
@@ -619,6 +639,8 @@ class DictionaryCreator(ABC):
                     alignment = alignment_file.readlines()
                     assert len(alignment) == self.num_verses
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
+                    count += 1
+                    print(f'{count} / ~{total} completed')
 
     def _remove_stop_words(self):
         stop_words = find_stop_words(self)
