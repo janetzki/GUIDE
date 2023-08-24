@@ -1,7 +1,8 @@
-import argparse
 import gc
 import itertools
+import math
 import os
+import pprint
 import random
 import re
 from collections import defaultdict, deque
@@ -11,7 +12,7 @@ from multiprocessing.pool import ThreadPool as Pool
 
 import _pickle as cPickle
 import editdistance as editdistance
-import math
+import imageio as imageio
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -22,14 +23,13 @@ import torch
 import torch.nn.functional as F
 import torch_geometric.transforms as T
 import wandb
-import yaml
+from matplotlib import colors
 from matplotlib.patches import Patch
 from networkx.drawing.nx_agraph import graphviz_layout
 from sklearn.metrics import roc_curve, precision_score, recall_score, f1_score
 from torch.nn import Dropout, Linear
 # from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import Data
-from torch_geometric.explain import Explainer, GNNExplainer, ModelConfig
 from torch_geometric.loader import NeighborLoader, LinkNeighborLoader
 from torch_geometric.nn import GCNConv, GATv2Conv
 from torch_geometric.utils import subgraph
@@ -146,30 +146,67 @@ class Precision_Loss(torch.nn.Module):
         precision = tp / (tp + fp + self.epsilon)
         recall = tp / (tp + fn + self.epsilon)
 
-        precision_loss = (2 * precision + recall) / 3
-        precision_loss = precision_loss.clamp(min=self.epsilon, max=1 - self.epsilon)
-        return 1 - precision_loss
+        if precision >= recall:
+            precision = precision.clamp(min=self.epsilon, max=1 - self.epsilon)
+            return 1 - precision
+        else:
+            f1 = 2 * (precision * recall) / (precision + recall + self.epsilon)
+            f1 = f1.clamp(min=self.epsilon, max=1 - self.epsilon)
+            return 1 - f1
 
 
-class FalsePN_Loss(torch.nn.Module):
-    """ Count the number of soft false positives and false negatives. """
-
-    def __init__(self, pos_weight=1.0, precision_reward=1.0):
+class SoftPrecision(torch.nn.Module):
+    # Only precision, does not make sense as loss function
+    def __init__(self, epsilon=1e-7):
         super().__init__()
-        self.pos_weight = pos_weight
-        self.precision_reward = precision_reward
+        self.epsilon = epsilon
 
-    def forward(self, y_pred, y_true, ):
+    def forward(self, y_pred, y_true, unknown_ids):
         y_pred = F.sigmoid(y_pred)
 
-        fp = ((1 - y_true) * y_pred).sum().to(torch.float32)
-        fn = (y_true * (1 - y_pred)).sum().to(torch.float32)
+        tp = (y_true * y_pred)
+        fp = ((1 - y_true) * y_pred)
 
-        return fp + fn * self.pos_weight / self.precision_reward
+        # do not count positives and negatives at unknown ids
+        # use unknown_ids as two-dimensional mask
+        tp[unknown_ids] = 0
+        fp[unknown_ids] = 0
+
+        tp = tp.sum().to(torch.float32)
+        fp = fp.sum().to(torch.float32)
+
+        precision = tp / (tp + fp + self.epsilon)
+        return precision
+
+
+class SoftRecall(torch.nn.Module):
+    # Only recall, does not make sense as loss function
+    def __init__(self, epsilon=1e-7):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def forward(self, y_pred, y_true, unknown_ids):
+        y_pred = F.sigmoid(y_pred)
+
+        tp = (y_true * y_pred)
+        fn = (y_true * (1 - y_pred))
+
+        # do not count positives and negatives at unknown ids
+        # use unknown_ids as two-dimensional mask
+        tp[unknown_ids] = 0
+        fn[unknown_ids] = 0
+
+        tp = tp.sum().to(torch.float32)
+        fn = fn.sum().to(torch.float32)
+
+        recall = tp / (tp + fn + self.epsilon)
+        return recall
 
 
 f1_loss_function = F1_Loss().cuda()
 precision_loss_function = Precision_Loss().cuda()
+soft_precision_function = SoftPrecision().cuda()
+soft_recall_function = SoftRecall().cuda()
 
 
 def get_neg_edges_for_sd(word_idxs, forbidden_edges, sd_idx):
@@ -227,7 +264,6 @@ class EdgeDecoder(torch.nn.Module):
         word_embeddings = self.dropout(word_embeddings)
         sd_representation = x_dict['semantic_domain'][sd_idxs]  # torch.zeros((len(sd_idxs), 1624)).to('cuda')
         z = torch.cat([sd_representation, word_embeddings], dim=-1)
-        # ml z = torch.cat([z_dict['user'][sd_idx], z_dict['movie'][word_idx]], dim=-1)
         z = self.lin1(z).relu()
         z = self.lin2(z)
         return z.view(-1)
@@ -237,16 +273,17 @@ class EdgeDecoder(torch.nn.Module):
 
 class Model(torch.nn.Module):
     # https://towardsdatascience.com/graph-neural-networks-with-pyg-on-node-classification-link-prediction-and-anomaly-detection-14aa38fe1275
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, dropout):
+    def __init__(self, in_channels, out_channels, bias):
         super().__init__()
-        assert num_layers == 1
-        assert dropout == 0.0
+        self.plot_file_paths = []
+        # assert num_layers == 1
+        # assert dropout == 0.0
         # self.dropout = Dropout(dropout)
         # self.encoder = GNNEncoder(hidden_channels, out_channels, dropout, metadata)
         # self.encoder = to_hetero(self.encoder, metadata, aggr='sum')
         # self.decoder = EdgeDecoder(out_channels, dropout)
 
-        self.conv1 = GCNConv(in_channels, out_channels, add_self_loops=False, normalize=False, improved=True)
+        self.conv1 = GCNConv(in_channels, out_channels, add_self_loops=False, normalize=False, improved=True, bias=bias)
         # self.conv2 = GCNConv(hidden_channels, hidden_channels, add_self_loops=False, improved=True)
         # self.conv3 = GCNConv(hidden_channels, out_channels, add_self_loops=False, improved=True)
 
@@ -263,19 +300,18 @@ class Model(torch.nn.Module):
         # self.conv1 = DNAConv(in_channels, heads=1, dropout=dropout, add_self_loops=False)
 
         # Smart initialize weight matrix
-        torch.nn.init.zeros_(self.conv1.lin.weight)  # todo: try without this line (random init)
         offset = in_channels - out_channels
         with torch.no_grad():
             for x in range(out_channels):
                 # Set diagonal (identity matrix for the question feature)
-                self.conv1.lin.weight[x][x + offset] = 50.0  # 3.0
+                self.conv1.lin.weight[x][x + offset] = 50.0  # 2.0
                 # # Set (weighted) node degree feature
                 # self.conv1.lin.weight[x][0] = 0.01
                 # self.conv1.lin.weight[x][1] = 0.01
         # Initialize bias vector
         with torch.no_grad():
             torch.nn.init.constant_(self.conv1.bias, -5.0)  # -3.0)
-        self.visualize_weights('initial')
+        # self.visualize_weights('initial')
 
     def forward(self, x, edge_index, edge_weight):
         # z = self.encode(x, edge_index, edge_weight)
@@ -296,70 +332,124 @@ class Model(torch.nn.Module):
         # z = self.lin(x)
         return z
 
-    def visualize_weights(self, title):
+    def visualize_weights(self, title, epoch=None, loss=None, plot_path=None):
+        print('Visualizing weights...')
+
         # set size to 2000 x 2000 pixels
         plt.rcParams["figure.figsize"] = (20, 20)
 
         weight_matrix = self.conv1.lin.weight.detach().cpu()
-        bias_matrix = self.conv1.bias.detach().cpu()
 
         # Convert the matrix tensors to a NumPy array
         weight_matrix_np = weight_matrix.numpy()
-        bias_matrix_np = bias_matrix.numpy()
-
-        # Add 1 dimension to the vectors
-        bias_matrix_np = np.expand_dims(bias_matrix_np, axis=0)
 
         # Create heatmaps using Matplotlib
-        plt.imshow(weight_matrix_np, cmap='rocket', interpolation='nearest')
+        norm = colors.TwoSlopeNorm(vmin=-5.0, vcenter=0, vmax=5.0)
+        plt.imshow(weight_matrix_np, cmap='bwr', norm=norm, interpolation='nearest')
         plt.colorbar()
+        if epoch is not None and loss is not None:
+            title += f' (epoch {epoch}, loss {loss:.3f})'
         plt.title('Weight Matrix Heatmap ' + title)
         plt.xlabel('Columns')
         plt.ylabel('Rows')
-        plt.show()
+        if epoch is not None:
+            file_name = f'plot_weight_matrix_{epoch}.png'
+            file_path = os.path.join(plot_path, file_name)
+            self.plot_file_paths.append(file_path)
+            plt.savefig(file_path)
+            plt.close()
+        else:
+            plt.show()
 
-        # bias has only one dimension, so we have to make it a 2D array to plot it
+            if self.conv1.bias is not None:
+                bias_matrix = self.conv1.bias.detach().cpu()
+                bias_matrix_np = bias_matrix.numpy()
 
-        bias_matrix_np = np.repeat(bias_matrix_np, repeats=100, axis=0)
-        plt.imshow(bias_matrix_np, cmap='rocket', interpolation='nearest')
-        plt.colorbar()
-        plt.title('Bias Vector Heatmap ' + title)
-        plt.xlabel('Columns')
-        plt.ylabel('Rows')
-        plt.show()
+                # Add 1 dimension to the vectors
+                bias_matrix_np = np.expand_dims(bias_matrix_np, axis=1)
+
+                # bias has only one dimension, so we have to make it a 2D array to plot it
+                bias_matrix_np = np.repeat(bias_matrix_np, repeats=100, axis=0)
+                plt.imshow(bias_matrix_np, cmap='bwr', norm=norm, interpolation='nearest')
+                plt.colorbar()
+                plt.title('Bias Vector Heatmap ' + title)
+                plt.xlabel('Columns')
+                plt.ylabel('Rows')
+                plt.show()
 
         # reset size to 400 x 400 pixels
         plt.rcParams["figure.figsize"] = (4, 4)
+        print('Done visualizing weights.')
+
+    def print_highest_qid_correlations(self, qid_node_names, num_max=20):
+        print('Collecting highest correlated qids...')
+        weight_matrix = self.conv1.lin.weight.detach().cpu()
+        # create a priority queue for num_max elements with the highest weights
+        correlated_qids = deque(maxlen=num_max)
+        correlated_qids_in_id_matrix = deque(maxlen=num_max)
+        offset = weight_matrix.size()[1] - weight_matrix.size()[0]
+        assert weight_matrix.size()[0] == len(qid_node_names)
+        for out_channel in range(len(qid_node_names)):
+            for in_channel in range(len(qid_node_names)):
+                weight = weight_matrix[out_channel][in_channel + offset].item()
+                in_qid = qid_node_names[in_channel]
+                out_qid = qid_node_names[out_channel]
+
+                # add the weight to the queue if it is higher than the lowest weight in the queue
+                if out_channel == in_channel:
+                    if len(correlated_qids_in_id_matrix) < num_max or weight > \
+                            correlated_qids_in_id_matrix[0][0]:
+                        bias = self.conv1.bias[out_channel].item() if self.conv1.bias is not None else 0.0
+                        correlated_qids_in_id_matrix.append((weight, in_qid, out_qid, bias))
+                    continue
+
+                # add the weight to the queue if it is higher than the lowest weight in the queue
+                if len(correlated_qids) < num_max or weight > correlated_qids[0][0]:
+                    correlated_qids.append((weight, in_qid, out_qid))
+
+        # sort the correlated qids
+        correlated_qids = sorted(correlated_qids, key=lambda x: x[0], reverse=True)
+        correlated_qids_in_id_matrix = sorted(correlated_qids_in_id_matrix, key=lambda x: x[0], reverse=True)
+        print('Highest correlated qids:')
+        pprint.pprint(correlated_qids, sort_dicts=False)
+
+        print('\nHighest correlated qids in identity matrix:')
+        pprint.pprint(correlated_qids_in_id_matrix, sort_dicts=False)
 
 
 class EarlyStopper:
     # https://stackoverflow.com/a/73704579/8816968
-    def __init__(self, patience=1, min_delta=0.0):
+    def __init__(self, patience=1, min_delta=0.0, warm_up=30):
         self.patience = patience
         self.min_delta = min_delta
+        self.warm_up = warm_up
         self.counter = 0
         self.min_validation_loss = np.inf
+        self.last_checkpoint = None
 
-    def early_stop(self, validation_loss):
+    def early_stop(self, validation_loss, epoch, save_model_function, checkpoint_path):
         if validation_loss < self.min_validation_loss:
             self.min_validation_loss = validation_loss
             self.counter = 0
+            save_model_function(checkpoint_path)
+            self.last_checkpoint = checkpoint_path
         elif validation_loss > (self.min_validation_loss + self.min_delta):
             self.counter += 1
-            if self.counter >= self.patience:
+            if self.counter >= self.patience and epoch > self.warm_up:
                 return True
         return False
 
 
 class LinkPredictor(object):
     # TARGET_EDGE_TYPE = ('semantic_domain', 'has', 'word')
-    # ml TARGET_EDGE_TYPE = ('user', 'rates', 'movie')
 
-    def __init__(self, dc, target_langs, config, graph_path):
+    def __init__(self, dc, target_langs, config, graph_path, ignored_langs=None):
         self.dc = dc
+        self.wandb_original_run_name = wandb.run.name
         # self.source_langs = set() # {'eng'}
         self.target_langs = target_langs
         self.all_langs = dc.target_langs
+        self.ignored_langs = {} if ignored_langs is None else ignored_langs
         self.gt_langs = self.target_langs  # self.source_langs.union(self.target_langs)
         # assert len(self.source_langs.intersection(self.target_langs)) == 0  # disjoint sets
 
@@ -369,194 +459,31 @@ class LinkPredictor(object):
         self.node_labels_all.append('semantic_domain')
 
         self.graph_path = graph_path
-        self.G = None
+        self.config = config
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model = None
+        self.optimizer = None
+        self.palette = None
+        self.train_loaders = None
 
+        # saved graph
+        self.G = None
+        self.empty_questions_by_lang = None
+
+        # saved dataset
+        self.data = None
         self.sd_node_idx_by_name = None
         self.word_node_idx_by_name = None
         self.sd_node_names = None
         self.word_node_names = None
         self.word_node_idxs_by_lang = None
         self.word_node_names_by_sd_name = None
-        self.color_by_node = None
-
-        self.config = config
-        self.model = None
-        self.optimizer = None
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.palette = None
         self.forbidden_neg_train_edges = None
-        self.data = None
         self.train_data = None
         self.val_data = None
         self.test_data = None
-        self.train_loaders = None
-        self.color_masks = []
-        self.empty_questions_by_lang = None
+        self.color_masks = None
 
-    def build_example_network(self):
-        self.G = nx.Graph()
-
-        # ----------------
-        # ADD NODES
-        # ----------------
-        # Add target words
-        self.G.add_node("mond", lang="deu")
-        self.G.add_node("satellit", lang="deu")
-        self.G.add_node("stern", lang="deu")
-        self.G.add_node("sternenlicht", lang="deu")
-        self.G.add_node("wandelstern", lang="deu")
-        self.G.add_node("merkur", lang="deu")
-        self.G.add_node("klar", lang="deu")
-        self.G.add_node("wetter", lang="deu")
-        self.G.add_node("windig", lang="deu")
-        self.G.add_node("sturm", lang="deu")
-        self.G.add_node("wolke", lang="deu")
-        self.G.add_node("schatten", lang="deu")
-        self.G.add_node("regen", lang="deu")
-        self.G.add_node("niederschlag", lang="deu")
-        self.G.add_node("feuchtigkeit", lang="deu")
-        self.G.add_node("wasserdicht", lang="deu")
-        self.G.add_node("botanik", lang="deu")
-        self.G.add_node("botaniker", lang="deu")
-        self.G.add_node("zahm", lang="deu")
-        self.G.add_node("domestiziert", lang="deu")
-        self.G.add_node("katze", lang="deu")
-        self.G.add_node("hund", lang="deu")
-
-        # Add nodes for semantic domains
-        self.G.add_node("Universe", lang="semantic_domain", index="1", size=5)
-        self.G.add_node("Sky", lang="semantic_domain", index="1.1", size=4)
-        self.G.add_node("Sun", lang="semantic_domain", index="1.1.1", size=3)
-        self.G.add_node("Moon", lang="semantic_domain", index="1.1.1.1", size=2)
-        self.G.add_node("Star", lang="semantic_domain", index="1.1.1.2", size=2)
-        self.G.add_node("Planet", lang="semantic_domain", index="1.1.1.3", size=2)
-        self.G.add_node("Weather", lang="semantic_domain", index="1.1.3", size=3)
-        self.G.add_node("Wind", lang="semantic_domain", index="1.1.3.1", size=2)
-        self.G.add_node("Cloud", lang="semantic_domain", index="1.1.3.2", size=2)
-        self.G.add_node("Rain", lang="semantic_domain", index="1.1.3.3", size=2)
-        self.G.add_node("Water", lang="semantic_domain", index="1.3", size=3)
-        self.G.add_node("Plant", lang="semantic_domain", index="1.5", size=4)
-        self.G.add_node("Animal", lang="semantic_domain", index="1.6", size=4)
-        self.G.add_node("Types of animals", lang="semantic_domain", index="1.6.1", size=3)
-        self.G.add_node("Mammal", lang="semantic_domain", index="1.6.1.1", size=2)
-        self.G.add_node("Carnivore", lang="semantic_domain", index="1.6.1.1.2", size=1)
-
-        # Add source words
-        self.G.add_node("moon", lang="eng")
-        self.G.add_node("satellite", lang="eng")
-        self.G.add_node("star", lang="eng")
-        self.G.add_node("starlight", lang="eng")
-        self.G.add_node("wandering star", lang="eng")
-        self.G.add_node("mercury", lang="eng")
-        self.G.add_node("clear", lang="eng")
-        self.G.add_node("weather", lang="eng")
-        self.G.add_node("windy", lang="eng")
-        self.G.add_node("storm", lang="eng")
-        self.G.add_node("cloud", lang="eng")
-        self.G.add_node("shadow", lang="eng")
-        self.G.add_node("rain", lang="eng")
-        self.G.add_node("precipitation", lang="eng")
-        self.G.add_node("moisture", lang="eng")
-        self.G.add_node("waterproof", lang="eng")
-        self.G.add_node("botany", lang="eng")
-        self.G.add_node("botanist", lang="eng")
-        self.G.add_node("tame", lang="eng")
-        self.G.add_node("domesticated", lang="eng")
-        self.G.add_node("cat", lang="eng")
-        self.G.add_node("dog", lang="eng")
-
-        # ----------------
-        # ADD EDGES
-        # ----------------
-        # Add edges for semantic domain membership
-        self.G.add_edge("moon", "Moon", relation="S")
-        self.G.add_edge("satellite", "Planet", relation="S")
-        self.G.add_edge("star", "Star", relation="S")
-        self.G.add_edge("starlight", "Star", relation="S")
-        self.G.add_edge("wandering star", "Planet", relation="S")
-        self.G.add_edge("mercury", "Planet", relation="S")
-        self.G.add_edge("clear", "Weather", relation="S")
-        self.G.add_edge("weather", "Weather", relation="S")
-        self.G.add_edge("windy", "Wind", relation="S")
-        self.G.add_edge("storm", "Wind", relation="S")
-        self.G.add_edge("cloud", "Cloud", relation="S")
-        self.G.add_edge("shadow", "Cloud", relation="S")
-        self.G.add_edge("rain", "Rain", relation="S")
-        self.G.add_edge("precipitation", "Rain", relation="S")
-        self.G.add_edge("moisture", "Water", relation="S")
-        self.G.add_edge("waterproof", "Water", relation="S")
-        self.G.add_edge("botany", "Plant", relation="S")
-        self.G.add_edge("botanist", "Plant", relation="S")
-        self.G.add_edge("tame", "Types of animals", relation="S")
-        self.G.add_edge("domesticated", "Types of animals", relation="S")
-        self.G.add_edge("cat", "Carnivore", relation="S")
-        self.G.add_edge("dog", "Carnivore", relation="S")
-
-        self.G.add_edge("mond", "Moon", relation="S")
-        self.G.add_edge("satellit", "Planet", relation="S")
-        self.G.add_edge("stern", "Star", relation="S")
-        self.G.add_edge("sternenlicht", "Star", relation="S")
-        self.G.add_edge("wandelstern", "Planet", relation="S")
-        self.G.add_edge("merkur", "Planet", relation="S")
-        self.G.add_edge("wetter", "Weather", relation="S")
-        self.G.add_edge("klar", "Weather", relation="S")
-        self.G.add_edge("windig", "Wind", relation="S")
-        self.G.add_edge("sturm", "Wind", relation="S")
-        self.G.add_edge("wolke", "Cloud", relation="S")
-        self.G.add_edge("schatten", "Cloud", relation="S")
-        self.G.add_edge("regen", "Rain", relation="S")
-        self.G.add_edge("niederschlag", "Rain", relation="S")
-        self.G.add_edge("feuchtigkeit", "Water", relation="S")
-        self.G.add_edge("wasserdicht", "Water", relation="S")
-        self.G.add_edge("botanik", "Plant", relation="S")
-        self.G.add_edge("botaniker", "Plant", relation="S")
-        self.G.add_edge("zahm", "Types of animals", relation="S")
-        self.G.add_edge("domestiziert", "Types of animals", relation="S")
-        self.G.add_edge("katze", "Carnivore", relation="S")
-        self.G.add_edge("hund", "Carnivore", relation="S")
-
-        # Add edges for semantic domain hierarchy
-        self.G.add_edge("Universe", "Sky", relation="S")
-        self.G.add_edge("Sky", "Sun", relation="S")
-        self.G.add_edge("Sun", "Moon", relation="S")
-        self.G.add_edge("Sun", "Star", relation="S")
-        self.G.add_edge("Sun", "Planet", relation="S")
-        self.G.add_edge("Sky", "Weather", relation="S")
-        self.G.add_edge("Weather", "Wind", relation="S")
-        self.G.add_edge("Weather", "Cloud", relation="S")
-        self.G.add_edge("Weather", "Rain", relation="S")
-        self.G.add_edge("Universe", "Plant", relation="S")
-        self.G.add_edge("Universe", "Animal", relation="S")
-        self.G.add_edge("Universe", "Water", relation="S")
-        self.G.add_edge("Animal", "Types of animals", relation="S")
-        self.G.add_edge("Types of animals", "Mammal", relation="S")
-        self.G.add_edge("Mammal", "Carnivore", relation="S")
-
-        # Add edges for word alignments
-        self.G.add_edge("mond", "moon", relation="A")
-        self.G.add_edge("satellit", "satellite", relation="A")
-        self.G.add_edge("stern", "star", relation="A")
-        self.G.add_edge("sternenlicht", "starlight", relation="A")
-        self.G.add_edge("wandelstern", "wandering star", relation="A")
-        self.G.add_edge("merkur", "mercury", relation="A")
-        self.G.add_edge("wetter", "weather", relation="A")
-        self.G.add_edge("klar", "clear", relation="A")
-        self.G.add_edge("windig", "windy", relation="A")
-        self.G.add_edge("sturm", "storm", relation="A")
-        self.G.add_edge("wolke", "cloud", relation="A")
-        self.G.add_edge("schatten", "shadow", relation="A")
-        self.G.add_edge("regen", "rain", relation="A")
-        self.G.add_edge("niederschlag", "precipitation", relation="A")
-        self.G.add_edge("feuchtigkeit", "moisture", relation="A")
-        self.G.add_edge("wasserdicht", "waterproof", relation="A")
-        self.G.add_edge("botanik", "botany", relation="A")
-        self.G.add_edge("botaniker", "botanist", relation="A")
-        self.G.add_edge("zahm", "tame", relation="A")
-        self.G.add_edge("domestiziert", "domesticated", relation="A")
-        self.G.add_edge("katze", "cat", relation="A")
-        self.G.add_edge("hund", "dog", relation="A")
-
-        return self.G
 
     def build_network(self):
         # load graph from file if it exists
@@ -595,7 +522,7 @@ class LinkPredictor(object):
             sd_name = self.dc.sds_by_lang['eng'][self.dc.sds_by_lang['eng']['cid'] == cid]['category'].iloc[0]
             try:
                 question = self.dc.sds_by_lang['eng'][(self.dc.sds_by_lang['eng']['cid'] == cid) & (
-                            self.dc.sds_by_lang['eng']['question_index'] == question_idx)]['question'].iloc[0]
+                        self.dc.sds_by_lang['eng']['question_index'] == question_idx)]['question'].iloc[0]
             except IndexError:
                 question = empty_questions[qid]
             long_qid_name = f'qid: {sd_name} {qid} ({question})'  # f'sd: {sd_name}'
@@ -604,31 +531,22 @@ class LinkPredictor(object):
         # add nodes for qids
         for qid in qids:
             self.G.add_node(long_qid_name_by_qid[qid], lang='semantic_domain')
-            # if len(self.G) == 50:
-            #     break
 
         # add nodes for words and edges to semantic domains and alignments
         nodes_by_lang = defaultdict(set)
         edges = set()
-        for lang in tqdm(self.all_langs,
+        graph_langs = set(self.all_langs) - set(self.ignored_langs)
+        for lang in tqdm(graph_langs,
                          desc='Building network',
-                         total=len(self.all_langs)):
+                         total=len(graph_langs)):
             for word in self.dc.words_by_text_by_lang[lang].values():
-                # is_connected_to_semantic_domain = False
-
                 # add word-qid edges
                 for qid in word.qids:
                     if qid.startswith('9'):
                         continue
                     long_qid_name = long_qid_name_by_qid[qid]
-                    # if long_qid_name not in self.G.nodes:  # for 50 qids etc.
-                    #     continue
                     assert long_qid_name in self.G.nodes
                     edges.add((str(word), long_qid_name, 1))
-                    # is_connected_to_semantic_domain = True
-
-                # if not is_connected_to_semantic_domain:
-                #     continue
 
                 nodes_by_lang[lang].add(str(word))
 
@@ -636,8 +554,8 @@ class LinkPredictor(object):
                 for translation, alignment_count in word.get_aligned_words_and_counts(
                         self.dc.words_by_text_by_lang):
                     translation_lang = translation.iso_language
-                    if translation_lang == lang:
-                        # avoid self-loops (for English words)
+                    if translation_lang == lang or translation_lang in self.ignored_langs:
+                        # skip self-loops and ignored langs
                         continue
                     nodes_by_lang[translation_lang].add(str(translation))
 
@@ -646,7 +564,8 @@ class LinkPredictor(object):
                     #     continue
 
                     # skip rare edges for higher precision and speed
-                    if alignment_count < 4:
+                    # WARNING: This compromises the recall metric! (in combination with removing nodes below)
+                    if alignment_count < self.config['min_alignment_count']:
                         continue
 
                     edges.add((str(word), str(translation), alignment_count))
@@ -662,11 +581,17 @@ class LinkPredictor(object):
             self.G.add_nodes_from(nodes_by_lang[lang], lang=lang)
         self.G.add_weighted_edges_from(edges)
 
+        # assert that self.G has no node in self.ignore_langs
+        for node in self.G.nodes:
+            assert self.G.nodes[node]['lang'] not in self.ignored_langs
+
         self.normalize_edge_weights()
         self.filter_edges_by_weight()
-        self.find_empty_questions_by_lang(long_qid_name_by_qid)
+        self.find_empty_questions_by_lang([n for n in long_qid_name_by_qid.values() if n in self.G])
 
-        # remove target language nodes with no edge to a gt lang node because we cannot predict their semantic domain
+        # remove target language nodes with no edge to a GT lang node because we cannot predict their semantic domain
+        # WARNING: This compromises the recall metric!
+        # Todo: How many nodes does this affect? (depends on self.config['min_alignment_count'])
         for lang in self.all_langs:
             for node in nodes_by_lang[lang]:
                 if len([n for n in self.G.neighbors(node) if self.G.nodes[n]['lang'] in self.gt_langs]) == 0:
@@ -689,26 +614,31 @@ class LinkPredictor(object):
             self.G[u][v]['weight'] = self.dc._compute_link_score(word1, word2)
 
     def filter_edges_by_weight(self):
-        # filter all edges with weight < 0.2
+        # filter out all edges between words with a small weight
+        # (This does not compromise the recall metric.)
         removed_edges = []
         for edge in tqdm(self.G.edges(data='weight'), desc='Filtering edges by weight', total=len(self.G.edges)):
-            if edge[2] < 0.2:
+            if edge[2] < self.config['min_edge_weight']:
                 removed_edges.append(edge)
         for edge in removed_edges:
             self.G.remove_edge(edge[0], edge[1])
 
-    def find_empty_questions_by_lang(self, long_qid_name_by_qid):
+    def find_empty_questions_by_lang(self, long_qid_names):
         # for each lang, find all qids that have no edge to a word in that lang
-        empty_questions_by_lang = defaultdict(set)
+        self.empty_questions_by_lang = dict()
+        for lang in self.all_langs:
+            self.empty_questions_by_lang[lang] = set()
         for lang in tqdm(self.gt_langs, desc='Finding empty questions by lang', total=len(self.gt_langs)):
-            for long_qid_name in long_qid_name_by_qid.values():
+            if lang not in self.gt_langs:
+                self.empty_questions_by_lang[lang] = long_qid_names
+                continue
+            for long_qid_name in long_qid_names:
                 neighbors = [n for n in self.G.neighbors(long_qid_name) if self.G.nodes[n]['lang'] == lang]
                 if len(neighbors) == 0:
-                    empty_questions_by_lang[lang].add(long_qid_name)
-        self.empty_questions_by_lang = dict(empty_questions_by_lang)
+                    self.empty_questions_by_lang[lang].add(long_qid_name)
 
     def convert_empty_questions_by_lang_to_tensors(self):
-        for lang in self.gt_langs:
+        for lang in self.all_langs:
             temp = torch.zeros(len(self.sd_node_idx_by_name), dtype=torch.bool)
             for long_qid_name in self.empty_questions_by_lang[lang]:
                 qid_idx = self.sd_node_idx_by_name[long_qid_name]
@@ -946,17 +876,8 @@ class LinkPredictor(object):
                 node_idxs.append(batch.n_id[:batch.batch_size].detach().cpu())
                 # masks.append(mask.detach().cpu())
 
-                # train_mirco_f1 = f1_score(y.cpu(), preds.cpu(), average='macro')
-                # train_accuracy = accuracy_score(y.cpu(), preds.cpu())
-
                 train_loss.backward()
                 self.optimizer.step()
-
-                # Log the weights, biases and gradients for each layer of the model
-                # self.writer = SummaryWriter()
-                # for name, param in self.model.named_parameters():
-                #     self.writer.add_histogram(name, param, epoch)
-                #     self.writer.add_histogram(f'{name}.grad', param.grad, epoch)
 
                 # # Remove negative edges from train_data
                 # self.train_data[self.TARGET_EDGE_TYPE].edge_label = self.train_data[self.TARGET_EDGE_TYPE].edge_label[:num_pos_edges]
@@ -979,32 +900,36 @@ class LinkPredictor(object):
         return train_loss, train_auc
 
     def train_link_predictor(self):
-        # val_loss, val_auc = eval_link_predictor(model, val_data)
-        # print(f"Epoch: {0:03d}, Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}")
-
-        early_stopper = EarlyStopper(patience=5)
-        for epoch in range(1, self.config['train']['epochs'] + 1):
-            val_loss, val_auc, _, _, _, precision, recall, _, f1, f1_loss = self.evaluate(
-                self.data.val_mask, threshold=0.99, compute_ideal_threshold=False)
+        early_stopper = EarlyStopper(patience=self.config['patience'], warm_up=self.config['warm_up'])
+        for epoch in range(1, self.config['epochs'] + 1):
+            plots = ['weights'] if epoch % 10 == 0 else []
+            val_loss, val_auc, _, _, _, precision, recall, _, f1, f1_loss, val_soft_precision, val_soft_recall = self.evaluate(
+                self.data.val_mask, threshold=0.99, compute_ideal_threshold=False, plots=plots, num_frame=epoch)
 
             train_loss, train_auc = self.train()
             wandb.log({"train loss": train_loss, "train AUC": train_auc, "val loss": val_loss, "val AUC": val_auc,
-                       "val F1 loss": f1_loss})
+                       "val soft precision": val_soft_precision, "val soft recall": val_soft_recall})
             wandb.watch(self.model)
 
             print(
-                f"Epoch: {epoch:03d}, Train Loss: {train_loss:.3f}, Val Loss: {val_loss:.3f}, Val F1 Loss: {f1_loss:.6f}")
+                f"Epoch: {epoch:03d}, Train Loss: {train_loss:.3f}, Val Loss: {val_loss:.3f}, Val Soft Precision: {val_soft_precision:.3f}, Val Soft Recall: {val_soft_recall:.3f}")
 
-            if early_stopper.early_stop(val_loss):
+            checkpoint_path = f"model_{wandb.run.name}_epoch{epoch}_val-loss{val_loss:.3f}_checkpoint.bin"
+            if early_stopper.early_stop(val_loss, epoch, self.save_model, checkpoint_path):
                 print("Early stopping")
+                self.create_gif()
+                self.load_model(early_stopper.last_checkpoint)
                 break
 
-    def compute_loss_with_empty_questions(self, y_hat, y, node_idxs):
+    def compute_loss_with_empty_questions(self, y_hat, y, node_idxs, function=None):
         # do not count candidates at unknown positions
         node_langs = [self.word_node_names[i.item()].split(': ')[0] for i in node_idxs]
         empty_questions = [self.empty_questions_by_lang[lang] for lang in node_langs]
         empty_questions = torch.stack(empty_questions).to(self.device)
-        return self.criterion(y_hat, y, empty_questions)
+        if function is None:
+            return self.criterion(y_hat, y, empty_questions)
+        else:
+            return function(y_hat, y, empty_questions)
 
     def compute_metric_with_empty_questions(self, candidates, node_idxs):
         # do not count candidates at unknown positions
@@ -1012,7 +937,9 @@ class LinkPredictor(object):
         empty_questions = [self.empty_questions_by_lang[lang] for lang in node_langs]
         valid_questions = torch.logical_not(torch.stack(empty_questions)).to(self.device)
         candidates = candidates.to(self.device)
-        return torch.sum(torch.logical_and(candidates, valid_questions)).item()
+        result_tensor = torch.logical_and(candidates, valid_questions)
+        result_num = torch.sum(result_tensor).item()
+        return result_num, result_tensor
 
     def get_node_names_and_label_from_edge_label_index(self, edge_label, edge_label_index, idx):
         label = edge_label[idx].item()
@@ -1036,62 +963,75 @@ class LinkPredictor(object):
         return similar_words
 
     def print_human_readable_predictions(self, y, y_hat, link_probs, mask, threshold, max_print_words=10,
-                                         save_to_csv_path=None, word_idx_map=None, max_print_total=100):
+                                         save_to_csv_path=None, word_idx_map=None, max_print_total=100, ):
         print("Printing human readable predictions...")
         predictions = []
         # for each element in out, lookup all edges in eval_data[self.TARGET_EDGE_TYPE].edge_label_index
         count_printed_words = 0
         count_printed_total = 0
         assert (mask is None or len(mask) == len(link_probs))
-        total_words = mask.sum().item() if mask is not None else len(link_probs)
-        for word_idx, sd_preds in tqdm(enumerate(link_probs), total=total_words):
+        for word_idx, qid_preds in tqdm(enumerate(link_probs), total=len(link_probs)):
             if mask is not None and not mask[word_idx]:
                 continue
             printed = False
-            for sd_idx, prob in enumerate(sd_preds):
-                label = y[word_idx][sd_idx] if y is not None else None
+            for qid_idx, prob in enumerate(qid_preds):
                 pred = 1 if prob >= threshold else 0
-                is_correct = label is None or pred == label
                 if pred == 0:  # and is_correct:
                     continue
+                label = y[word_idx][qid_idx] if y is not None else None
+                is_correct = label is None or (pred == label).item()
 
-                word = self.word_node_names[word_idx_map[word_idx].item()] if word_idx_map is not None else \
-                    self.word_node_names[word_idx]
-                sd = self.sd_node_names[sd_idx]
-                pred_raw = y_hat[word_idx][sd_idx]
+                original_word_idx = word_idx_map[word_idx].item() if word_idx_map is not None else word_idx
+                word = self.word_node_names[original_word_idx]
+                sd = self.sd_node_names[qid_idx]
+                pred_raw = y_hat[word_idx][qid_idx]
+                assert not is_correct or word in self.word_node_names_by_sd_name[sd]
 
                 prefix = '! ' if not is_correct and label is not None else '  '  # highlight false positives and false negatives
                 similar_words = []
+                explanation = ''
                 if pred == 1 and not is_correct:
                     similar_words = self.find_similar_words_in_sd(word, sd)
+                    explanation = self.explain_false_positive(original_word_idx, qid_idx)
                 print(
-                    f'{prefix} prediction: {pred} ({pred_raw:.0f} --> {prob:.2f}/{threshold:.2f}), actual: {label}, {word} ({word_idx}) <---> {sd} ({sd_idx})',
-                    similar_words)
+                    f'{prefix} prediction: {pred} ({pred_raw:.0f} --> {prob:.2f}/{threshold:.2f}), actual: {label}, {word} ({word_idx}) <---> {sd} ({qid_idx})',
+                    similar_words, explanation)
                 printed = True
                 count_printed_total += 1
                 if pred == 1:
-                    predictions.append([sd, word, prob.item()])
+                    predictions.append([sd, word, prob.item(), pred_raw.item(), is_correct, similar_words])
             count_printed_words += printed
             if count_printed_words >= max_print_words or count_printed_total >= max_print_total:
                 print(f'... and {len(link_probs) - max_print_words} more words')
                 break
         print(f'Printed {count_printed_words} words and {count_printed_total} total predictions')
 
-        if save_to_csv_path is not None:
-            print(f'Saving predictions to {save_to_csv_path}...')
-            with open(save_to_csv_path, 'w') as f:
-                f.write('qid,semantic domain,word,question,score\n')
-                for prediction in predictions:
-                    sd_qid_question = prediction[0].split(': ')[1]
-                    semantic_domain = re.search(r'^([^0-9]+)', sd_qid_question).group(1).strip()
-                    qid = re.search(r'([0-9]+.*?)(?= \()', sd_qid_question).group(1)
-                    question = re.search(r'\((.*?)\)', sd_qid_question).group(1)
-                    f.write(qid + ',')
-                    f.write('"' + semantic_domain + '",')
-                    f.write(str(prediction[1]) + ',')
-                    f.write('"' + question + '",')
-                    f.write(str(prediction[2]) + '\n')
-            print('Done')
+        if save_to_csv_path is None:
+            return
+
+        print(f'Saving predictions to {save_to_csv_path}...')
+        with open(save_to_csv_path, 'w') as f:
+            f.write(
+                'key,qid,semantic domain,language,word,question,score,raw score,is correct,similar words\n')
+            for prediction in predictions:
+                sd_qid_question = prediction[0].split(': ')[1]
+                semantic_domain = re.search(r'^([^0-9]+)', sd_qid_question).group(1).strip()
+                qid = re.search(r'([0-9]+.*?)(?= \()', sd_qid_question).group(1)
+                lang, word = prediction[1].split(': ')
+                question = re.search(r'\((.*)\)', sd_qid_question).group(1)
+                key = f'{qid}#{lang}#{word}'
+                f.write(key + ',')  # key
+                f.write(qid + ',')  # qid
+                f.write('"' + semantic_domain + '",')  # semantic domain
+                f.write(lang + ',')  # language
+                f.write(word + ',')  # word
+                f.write('"' + question + '",')  # question
+                f.write(str(prediction[2]) + ',')  # score
+                f.write(f'{prediction[3]:.2f},')  # raw score
+                f.write(str(prediction[4]) + ',')  # is correct
+                f.write('"' + str(prediction[5]) + '"\n')  # similar words
+                # f.write('"' + str(prediction[6]) + '"\n')  # explanation
+        print('Done')
 
     @staticmethod
     def find_ideal_threshold(target, predicted):
@@ -1137,11 +1077,14 @@ class LinkPredictor(object):
         return thresholds_precisions_recalls[0][0]
 
     @torch.no_grad()
-    def evaluate(self, mask, plots=None, print_human_readable_predictions=False,
-                 compute_additional_metrics=False, threshold=None, compute_ideal_threshold=True):
+    def evaluate(self, mask=None, plots=None, print_human_readable_predictions=False,
+                 compute_additional_metrics=False, threshold=None, compute_ideal_threshold=True, num_frame=None,
+                 print_highest_qid_correlations=False):
         assert ((threshold is not None and 0 <= threshold <= 1) or compute_ideal_threshold)
         if plots is None:
             plots = []
+        if mask is None:
+            mask = torch.ones(self.data.num_nodes, dtype=torch.bool, device=self.device)
         self.model.eval()
         y_hats = []
         ys = []
@@ -1154,19 +1097,19 @@ class LinkPredictor(object):
         #     edge_label_index=(
         #         self.TARGET_EDGE_TYPE, eval_data[self.TARGET_EDGE_TYPE].edge_label_index.to(self.device)),
         #     edge_label=eval_data[self.TARGET_EDGE_TYPE].edge_label.to(self.device),
-        #     batch_size=self.config['train']['batch_size'],  # number of edges per batch
+        #     batch_size=self.config['batch_size'],  # number of edges per batch
         #     shuffle=True,
         # )
         eval_loaders = [NeighborLoader(
             self.data,
             num_neighbors=[-1],
-            batch_size=self.config['train']['batch_size'],
+            batch_size=self.config['batch_size'],
             input_nodes=mask.to(self.device) & color_mask.to(self.device),
             shuffle=True,
             subgraph_type='bidirectional',
         ) for color_mask in self.color_masks if (mask.to(self.device) & color_mask.to(self.device)).sum() > 0]
 
-        for eval_loader in eval_loaders:
+        for eval_loader in tqdm(eval_loaders, desc='Evaluating...', total=len(eval_loaders)):
             for batch in eval_loader:
                 #         assert batch.node_stores[0].num_nodes == 1624
                 #     batch = self.data
@@ -1192,21 +1135,6 @@ class LinkPredictor(object):
                 # edge_label_indexes.append(edge_label_index)
                 node_idxs.append(batch.n_id[:batch.batch_size].detach().cpu())
 
-        # mask_lord = torch.zeros(len(self.data.x), dtype=torch.bool)
-        # mask_lord[self.word_node_idx_by_name['eng: lord']] = True
-        # nl = NeighborLoader(
-        #     self.data,
-        #     num_neighbors=[-1, -1],
-        #     batch_size=1,
-        #     input_nodes=mask_lord.to(self.device),
-        #     shuffle=True,
-        #     subgraph_type='bidirectional',
-        # )
-        # for batch in nl:
-        #     batch.to(self.device)
-        #     y_hat_2 = self.model(batch.x, batch.edge_index, batch.edge_weight)[:batch.batch_size]
-        #     pass
-
         y_hat = torch.cat(y_hats, dim=0)
         y = torch.cat(ys, dim=0)
         node_idxs = torch.cat(node_idxs, dim=0)
@@ -1216,7 +1144,12 @@ class LinkPredictor(object):
         assert (len(y) == mask.sum())
         # edge_label_index = torch.cat(edge_label_indexes, dim=1)
         # assert self.convert_edge_index_to_set_of_tuples(edge_label_index) == self.convert_edge_index_to_set_of_tuples(eval_loader.data[self.TARGET_EDGE_TYPE].edge_label_index)
-        eval_loss = self.compute_loss_with_empty_questions(y_hat.to(self.device), y.to(self.device), node_idxs)
+        print(f'Computing evaluation metrics for {len(y)} words...')
+        eval_loss = self.compute_loss_with_empty_questions(y_hat, y, node_idxs)
+        soft_precision = self.compute_loss_with_empty_questions(y_hat, y, node_idxs,
+                                                                soft_precision_function)
+        soft_recall = self.compute_loss_with_empty_questions(y_hat, y, node_idxs,
+                                                             soft_recall_function)
         f1_loss = -1.0  # f1_loss_function(y_hat, y)
         link_probs = y_hat.sigmoid()
         # y = eval_data[self.TARGET_EDGE_TYPE].edge_label.cpu().numpy()
@@ -1249,26 +1182,31 @@ class LinkPredictor(object):
             print(f'Samples: {mask.sum()} words, {num_predictions} predictions')
             print(f'Ideal threshold: {ideal_threshold:.2f}')
             print(f'Used threshold: {threshold:.2f}')
-            false_positives = self.compute_metric_with_empty_questions(
+            false_positives, false_positives_tensor = self.compute_metric_with_empty_questions(
                 torch.logical_and(link_probs_tensor >= threshold, y_tensor == 0), node_idxs)
             print(f'False positives: {false_positives} ({false_positives / num_predictions * 100:.2f} %)')
-            false_negatives = self.compute_metric_with_empty_questions(
+            false_negatives, _ = self.compute_metric_with_empty_questions(
                 torch.logical_and(link_probs_tensor < threshold, y_tensor == 1), node_idxs)
             print(f'False negatives: {false_negatives} ({false_negatives / num_predictions * 100:.2f} %)')
-            true_positives = self.compute_metric_with_empty_questions(
+            true_positives, _ = self.compute_metric_with_empty_questions(
                 torch.logical_and(link_probs_tensor >= threshold, y_tensor == 1), node_idxs)
             print(f'True positives: {true_positives} ({true_positives / num_predictions * 100:.2f} %)')
-            true_negatives = self.compute_metric_with_empty_questions(
+            true_negatives, _ = self.compute_metric_with_empty_questions(
                 torch.logical_and(link_probs_tensor < threshold, y_tensor == 0), node_idxs)
             print(f'True negatives: {true_negatives} ({true_negatives / num_predictions * 100:.2f} %)')
-            precision = true_positives / (true_positives + false_positives)
+            precision = true_positives / (
+                    true_positives + false_positives) if true_positives + false_positives > 0 else 0.0
             print(f'Precision: {precision:.2f}')
-            recall = true_positives / (true_positives + false_negatives)
+            recall = true_positives / (
+                    true_positives + false_negatives) if true_positives + false_negatives > 0 else 0.0
             print(f'Recall: {recall:.2f}')
             f1 = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0.0
             print(f'F1: {f1:.2f}')
             # bacc = balanced_accuracy_score(y, y_hat >= ideal_threshold)
             # print(f'Accuracy: {acc:.2f}')
+
+            if 'explain false positives' in plots:
+                self.explain_false_positives(false_positives_tensor, node_idxs)
 
         if 'roc_curve' in plots:
             y_probas = np.array([1 - link_probs_flat, link_probs_flat]).T
@@ -1284,83 +1222,16 @@ class LinkPredictor(object):
             plt.show()
 
         if 'weights' in plots:
-            self.model.visualize_weights('after training')
+            self.model.visualize_weights('after/during training, ' + self.wandb_original_run_name, num_frame, eval_loss,
+                                         self.config['plot_path'])
+
+        if print_highest_qid_correlations:
+            self.model.print_highest_qid_correlations(self.sd_node_names)
 
         if print_human_readable_predictions:
             self.print_human_readable_predictions(y, y_hat, link_probs, None, threshold, word_idx_map=node_idxs)
 
-        return eval_loss, auc, ideal_threshold, false_positives, false_negatives, precision, recall, acc, f1, f1_loss
-
-    def explain(self):
-        # https://github.com/pyg-team/pytorch_geometric/blob/master/examples/gnn_explainer_link_pred.py
-        model_config = ModelConfig(
-            mode='binary_classification',
-            task_level='edge',
-            return_type='raw',
-            # task_level='node',
-            # return_type='log_probs',
-        )
-
-        # Explain model output for a single edge:
-        edge_label_index = self.val_data[self.TARGET_EDGE_TYPE].edge_label_index[:, 0]
-
-        explainer = Explainer(  # todo: fix the explainer, explain an edge or at least a node
-            model=self.model,
-            algorithm=GNNExplainer(epochs=200),
-            explanation_type='model',
-            node_mask_type='attributes',
-            edge_mask_type='object',
-            model_config=model_config,
-        )
-        explanation = explainer(
-            x=self.train_data.x.to(self.device),
-            edge_index=self.train_data.edge_index.to(self.device),
-            edge_weight=self.train_data.edge_weight.to(self.device),
-            edge_label_index=edge_label_index.to(self.device),
-            index=0,
-        )
-        print(f'Generated model explanations in {explanation.available_explanations}')
-
-        # Visualize the explanations:
-        path = 'plots/explainer/feature_importance_1.png'
-        explanation.visualize_feature_importance(path, top_k=10)
-        print(f"Feature importance plot has been saved to '{path}'")
-
-        path = 'plots/explainer/subgraph_1.pdf'
-        explanation.visualize_graph(path)
-        print(f"Subgraph visualization plot has been saved to '{path}'")
-
-        # Explain a selected target (phenomenon) for a single edge:
-        edge_label_index = self.val_data[self.TARGET_EDGE_TYPE].edge_label_index[:, 0]
-        target = self.val_data[self.TARGET_EDGE_TYPE].edge_label[0].unsqueeze(dim=0).long()
-
-        explainer = Explainer(
-            model=self.model,
-            algorithm=GNNExplainer(epochs=200),
-            explanation_type='phenomenon',
-            node_mask_type='attributes',
-            edge_mask_type='object',
-            model_config=model_config,
-        )
-        explanation = explainer(
-            x=self.train_data.x.to(self.device),
-            edge_index=self.train_data.edge_index.to(self.device),
-            edge_weight=self.train_data.edge_weight.to(self.device),
-            target=target.to(self.device),
-            edge_label_index=edge_label_index.to(self.device),
-            index=0,
-        )
-        available_explanations = explanation.available_explanations
-        print(f'Generated phenomenon explanations in {available_explanations}')
-
-        # Visualize the explanations:
-        path = 'plots/explainer/feature_importance_2.png'
-        explanation.visualize_feature_importance(path, top_k=10)
-        print(f"Feature importance plot has been saved to '{path}'")
-
-        path = 'plots/explainer/subgraph_2.pdf'
-        explanation.visualize_graph(path)
-        print(f"Subgraph visualization plot has been saved to '{path}'")
+        return eval_loss, auc, ideal_threshold, false_positives, false_negatives, precision, recall, acc, f1, f1_loss, soft_precision, soft_recall
 
     @staticmethod
     def convert_edge_index_to_set_of_tuples(edge_index):
@@ -1456,56 +1327,45 @@ class LinkPredictor(object):
         print(f'Added {len(neg_edges)} negative edges in total.')
 
     def save_model(self, path):
+        path = os.path.join(self.config['model_path'], path)
         print(f'Saving model to {path}')
         torch.save(self.model.state_dict(), path)
 
+    def update_original_run_name(self, model_path):
+        # extract original name from path (e.g. 'model_fanciful-gorge-55_epoch417_val-loss0.917_checkpoint.bin' -> 'fanciful-gorge-55')
+        self.wandb_original_run_name = re.search(r'(?<=model_)(.*?)(?=[_\.])', os.path.basename(model_path)).group(1)
+
     def load_model(self, path):
+        path = os.path.join(self.config['model_path'], path)
         print(f'Loading model from {path}')
+        self.update_original_run_name(path)
+
         self.init_model(self.data)
-        self.model.load_state_dict(torch.load(path))
-        self.model.visualize_weights('loaded')
+        self.model.load_state_dict(torch.load(path,
+                                              map_location=None if self.device == 'cuda' else torch.device('cpu')))
+        self.model.visualize_weights('loaded, ' + self.wandb_original_run_name)
         self.model.to(self.device)
         self.model.eval()
+        print('Done loading model.')
+
+    def create_gif(self):
+        assert (len(self.model.plot_file_paths) > 0)
+
+        # Create a gif from the plots
+        path = os.path.join(self.config['plot_path'], f'0_plot_weights_{wandb.run.name}.gif')
+        print('Creating gif at ' + path)
+        with imageio.get_writer(path, mode='I') as writer:
+            for file_path in self.model.plot_file_paths:
+                image = imageio.v2.imread(file_path)
+                writer.append_data(image)
+
+        # # Remove the files
+        # for filename in self.model.plot_file_paths:
+        #     os.remove(filename)
+        print('Done creating gif.')
 
     @torch.no_grad()
     def predict(self, test_word, threshold):
-        # # create dataset
-        # semantic_domain_nodes = [node for node in complete_graph.nodes if
-        #                          complete_graph.nodes[node]["lang"] == "semantic_domain"]
-        #
-        # # Feature 1: Language
-        # lang_feature = torch.zeros(len(complete_graph), len(self.node_labels_training))
-        # for node in complete_graph.nodes:
-        #     lang = complete_graph.nodes[node]["lang"]
-        #     if lang in langs:
-        #         lang = 'fra'
-        #     lang_feature[self.node_idx_by_type_by_name[node]][
-        #     #     self.node_labels_all.index('eng')] = 1  # complete_graph.nodes[node]["lang"]
-        #         self.node_labels_all.index(lang)] = 1
-        #
-        # # Feature 2: Semantic Domains
-        # sd_feature = torch.zeros(len(complete_graph), len(semantic_domain_nodes))
-        # for node in complete_graph.nodes:
-        #     if complete_graph.nodes[node]["lang"] == "semantic_domain":  # this feature is helpful (tested)
-        #         sd_feature[self.node_idx_by_type_by_name[node]][semantic_domain_nodes.index(node)] = 1
-        #
-        # x = torch.cat([lang_feature, sd_feature], dim=1)
-        #
-        # # edges to all sds
-        # target_edges = [(self.sd_node_idx_by_name[sd], self.word_node_idx_by_name[test_word]) for sd in self.G.nodes if
-        #                 self.G.nodes[sd]['lang'] == 'semantic_domain']
-        # target_edge_index = torch.tensor(list(target_edges)).transpose(0, 1)
-        #
-        # num_nodes_by_lang = {
-        #     lang: len([node for node in complete_graph.nodes if complete_graph.nodes[node]["lang"] == lang]) for lang
-        #     in self.node_labels_all}
-        #
-        # pred_data[self.TARGET_EDGE_TYPE]['edge_label_index'] = target_edge_index
-        # pred_data = pred_data.to(self.device)
-        #
-        # y_hat = self.model(pred_data.x_dict, pred_data.edge_index_dict,
-        #                  pred_data[self.TARGET_EDGE_TYPE]['edge_label_index'])
-
         # clone the data to avoid changing the original data
         pred_data = self.data.clone()
         pred_data.to(self.device)
@@ -1533,33 +1393,37 @@ class LinkPredictor(object):
         pred_data.to(self.device)
 
         # build mask for languages
-        lang_idxs = [self.all_langs.index(lang) for lang in langs]
         mask = torch.zeros(len(pred_data.x), dtype=torch.bool)
-        for lang_idx in lang_idxs:
-            mask[pred_data.x[:, lang_idx + 3] == 1] = True
+        for lang in langs:
+            mask[self.word_node_idxs_by_lang[lang]] = True
         mask = mask.to(self.device)
 
-        # mask out the current language
-        pred_data.x[mask] = 0
-
-        node_loader = NeighborLoader(
+        node_loaders = [NeighborLoader(
             pred_data,
             num_neighbors=[-1],
-            batch_size=self.config['train']['batch_size'],
-            input_nodes=mask.to(self.device),
+            batch_size=self.config['batch_size'],
+            input_nodes=mask.to(self.device) & color_mask.to(self.device),
             shuffle=True,
             subgraph_type='bidirectional',
-        )
+        ) for color_mask in self.color_masks if (mask.to(self.device) & color_mask.to(self.device)).sum() > 0]
 
+        ys = []
         y_hats = []
         node_idxs = []
-        for batch in node_loader:
-            batch.to(self.device)
-            y_hat = self.model(batch.x, batch.edge_index, batch.edge_weight)
-            y_hat = y_hat[:batch.batch_size]
-            y_hats.append(y_hat.detach().cpu())
-            node_idxs.append(batch.n_id[:batch.batch_size].detach().cpu())
+        for node_loader in node_loaders:
+            for batch in node_loader:
+                batch.to(self.device)
+                x = batch.x.clone()
+                y = batch.y[:batch.batch_size]
+                ys.append(y.detach().cpu())
+                x[:batch.batch_size] = 0  # mask out the nodes to be predicted
+                y_hat = self.model(x, batch.edge_index, batch.edge_weight)
+                y_hat = y_hat[:batch.batch_size]
+                y_hats.append(y_hat.detach().cpu())
+                node_idxs.append(batch.n_id[:batch.batch_size].detach().cpu())
 
+        torch.cuda.empty_cache()
+        y = torch.cat(ys, dim=0)
         y_hat = torch.cat(y_hats, dim=0)
         node_idxs = torch.cat(node_idxs, dim=0)
 
@@ -1569,28 +1433,259 @@ class LinkPredictor(object):
         assert (len(node_idxs) == len(set(node_idxs)))  # assert that every idx in node_idxs appears exactly once
 
         # print all positive predictions
-        self.print_human_readable_predictions(None, y_hat, link_probs, None, threshold, max_print_words=int(1e10),
-                                              save_to_csv_path=f'data/6_results/predicted_sds_{langs}.csv',
-                                              word_idx_map=node_idxs)
+        positive_prediction_mask = link_probs.sum(dim=1) >= threshold
+        self.print_human_readable_predictions(y, y_hat, link_probs, positive_prediction_mask, threshold,
+                                              max_print_words=int(1e10),
+                                              save_to_csv_path=f'data/6_results/predicted_sds_{langs}_{self.wandb_original_run_name}.csv',
+                                              word_idx_map=node_idxs, max_print_total=int(1e10))
         print('\n')
+
+    def explain_false_positive(self, node_idx, qid_idx, fp_node_name_by_qid_by_node=None):
+        node_name = self.word_node_names[node_idx]
+        qid_name = self.sd_node_names[qid_idx]
+        # neighbors = list(self.G.neighbors(node_name))
+        node_mask = torch.zeros(len(self.data.x), dtype=torch.bool)
+        node_mask[node_idx] = True
+
+        # select only the current node
+        node_loader = NeighborLoader(
+            self.data.to(self.device),
+            num_neighbors=[-1],
+            batch_size=self.config['batch_size'],
+            input_nodes=node_mask.to(self.device),
+            shuffle=True,
+            subgraph_type='bidirectional',
+        )
+        # for neighbor in neighbors:
+        # neighbor_mask = torch.ones(len(self.data.x), dtype=torch.bool)
+        # neighbor_idx = self.word_node_idx_by_name[neighbor]
+        # neighbor_mask[neighbor_idx] = False
+        # neighbor_mask = neighbor_mask.to(self.device)
+        # pred_data.x[neighbor_mask] = 0
+
+        assert (len(node_loader) == 1)
+        batch = next(iter(node_loader))
+        assert (batch.batch_size == 1)
+
+        batch.to(self.device)
+        x = batch.x.clone()
+        x[:batch.batch_size] = 0  # mask out the node to be predicted
+        y_hat = self.model(batch.x, batch.edge_index, batch.edge_weight)
+        y_hat = y_hat[:batch.batch_size].detach().cpu()
+        base_prediction = y_hat[0][qid_idx]
+        # print(f'Explaining false positive {node_name} -> {qid_name} (raw score: {base_prediction.item():.1f}, bias: {self.model.conv1.bias[qid_idx]:.1f})')
+
+        qid_diff_by_neighbor = {}
+        num_neighbors = len(batch.x) - batch.batch_size
+        for i in range(num_neighbors):
+            # mask out each neighbor individually and predict
+            neighbor_idx = batch.batch_size + i
+            x_neighbor = batch.x.clone()
+            x_neighbor[neighbor_idx] = 0  # mask out the neighbor # continue here: fix this
+            y_hat = self.model(x_neighbor, batch.edge_index, batch.edge_weight)
+
+            y_hat = y_hat[:batch.batch_size].detach().cpu()
+            qid_diff = base_prediction - y_hat[0][qid_idx]
+            original_neighbor_idx = batch.n_id[neighbor_idx].detach().cpu()
+            neighbor_name = self.word_node_names[original_neighbor_idx]
+            qid_diff_by_neighbor[neighbor_name] = qid_diff.item()
+            if fp_node_name_by_qid_by_node is not None and qid_diff.item() > 0:
+                fp_node_name_by_qid_by_node[qid_name][neighbor_name].add(node_name)
+
+        assert fp_node_name_by_qid_by_node is None or len(fp_node_name_by_qid_by_node[qid_name]) > 0
+        assert (abs(base_prediction - sum(qid_diff_by_neighbor.values()) - self.model.conv1.bias[qid_idx]) < 1e-2)
+
+        # sort by difference
+        qid_diff_by_neighbor = {k: round(v * 10) / 10 for k, v in
+                                sorted(qid_diff_by_neighbor.items(), key=lambda item: item[1], reverse=True)}
+        return qid_diff_by_neighbor
+
+    def explain_false_positives(self, false_positives, node_idxs):
+        path = 'data/4_semdoms/additional_words.xlsx'
+        df = pd.read_excel(path)
+        df = df.set_index('key')
+
+        # for each false positive (i.e., a node with an incorrectly predicted semantic domain question), print all its neighbors
+        false_positives = false_positives.nonzero(as_tuple=False)
+        total = len(false_positives)
+        fp_node_names_by_qid_by_node = defaultdict(lambda: defaultdict(set))
+
+        for node_idx, qid_idx in tqdm(false_positives, total=total, desc='Explaining false positives'):
+            original_node_idx = node_idxs[node_idx]
+            qid_diff_by_neighbor = self.explain_false_positive(original_node_idx, qid_idx, fp_node_names_by_qid_by_node)
+            # print(f'qid_diff_by_neighbor: {qid_diff_by_neighbor}')
+
+        # in each qid, sort by number of false positives
+        for qid_name in fp_node_names_by_qid_by_node:
+            fp_node_names_by_qid_by_node[qid_name] = {k: v for k, v in
+                                                      sorted(fp_node_names_by_qid_by_node[qid_name].items(),
+                                                             key=lambda item: len(item[1]), reverse=True)}
+        # sort qids by sum of false positives
+        fp_node_names_by_qid_by_node = {k: v for k, v in
+                                        sorted(fp_node_names_by_qid_by_node.items(),
+                                               key=lambda item: sum(len(x) for x in item[1].values()), reverse=True)}
+
+        # Open an HTML file to write
+        path = f'data/6_results/fp_node_name_by_qid_by_node_{self.wandb_original_run_name}.html'
+        with open(path, 'w') as f:
+            # Write the HTML header
+            f.write("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Results</title>
+                <style>
+                    .colorButton {
+                        border: none;
+                        text-align: center;
+                        display: inline-block;
+                        cursor: pointer;
+                        border-radius: 1em;
+                    }
+                </style>
+                
+                <script>
+                    const colors = ['lightgray', 'lightgreen', 'pink'];
+                    const sound = new Audio("sounds/mixkit-cool-interface-click-tone-2568.wav");
+
+                    function changeColor(clickedButton) {
+                        // Get all buttons of the given group type
+                        groupType = clickedButton.getAttribute('data-group');
+                        var buttons = document.querySelectorAll('button[data-group="' + groupType + '"]');
+                        
+                        // Change the color of the clicked button
+                        var currentColor = clickedButton.style.backgroundColor;
+                        var index = colors.indexOf(currentColor);
+                        index = (index + 1) % colors.length;
+                        clickedButton.style.backgroundColor = colors[index];
+                        sound.play();
+                        sound.currentTime = 0;
+                        
+                        // Change the color of the other buttons
+                        for (var i = 0; i < buttons.length; i++) {
+                            button = buttons[i];
+                            button.style.backgroundColor = clickedButton.style.backgroundColor;    
+                        }
+                        
+                        // Log the group type and the clicked button's status
+                        console.log(groupType, clickedButton.style.backgroundColor);
+                    }
+                    
+                    function printAllActiveButtons() {
+                        // Get all data groups
+                        var dataGroups = document.querySelectorAll('button[data-group]');
+                        
+                        // Print the group type and the color of one of its buttons
+                        output = ''
+                        for (var i = 0; i < dataGroups.length; i++) {
+                            var dataGroup = dataGroups[i];
+                            
+                            // Get the first button of the group
+                            var buttons = document.querySelectorAll('button[data-group="' + dataGroup.getAttribute('data-group') + '"]');
+                            var button = buttons[0];
+                            
+                            // Print the group type and the color of the first button (if it is not lightgray)
+                            color = button.style.backgroundColor;
+                            if (color != 'lightgray') {
+                                output += dataGroup.getAttribute('data-group')
+                                output += ': '
+                                output += button.style.backgroundColor
+                                output += ', '
+                            }
+                        }
+                        console.log(output);
+                    } 
+                </script>
+            </head>
+            <body>
+                <button onclick="printAllActiveButtons()">Print All Active Buttons</button>
+            """)
+
+            def get_node_color(node_name, qid_name):
+                qid = re.search(r'([0-9]+.*?)(?= \()', qid_name).group(1)
+                key = qid + '#' + node_name.replace(': ', '#')
+                is_manually_verified = False
+                translation = ''
+                word_has_gpt4_answer = False
+
+                if key in df.index:
+                    is_manually_verified = df.loc[key]['manually verified'] == 1
+                    translation = f' ({df.loc[key]["deu translation"]})'
+                    translation = '' if translation == ' (nan)' else translation
+                    if df.loc[key]['GPT-4 answer'] == 1:
+                        color = 'orange'  # GPT-4 says the word belongs to the QID
+                        word_has_gpt4_answer = True
+                    elif df.loc[key]['GPT-4 answer'] == 0:
+                        color = 'red'  # GPT-4 says the word does not belong to the QID
+                        # assert node_name not in self.word_node_names_by_sd_name[qid_name]
+                        if node_name in self.word_node_names_by_sd_name[qid_name]:
+                            print(
+                                f'WARNING: {node_name} is marked as a false positive, but it is in the GT dict for {qid_name}.')
+                        word_has_gpt4_answer = True
+
+                if not word_has_gpt4_answer:
+                    if node_name in self.word_node_names_by_sd_name[qid_name]:
+                        color = 'green'  # the GT dict says the word belongs to the QID
+                        is_manually_verified = True
+                    else:
+                        color = 'grey'  # unknown word
+
+                bold_style = 'font-weight:bold;' if is_manually_verified else ''
+                return color, key, translation, bold_style
+
+            # Start printing the false positives
+            print(f'Saving false positives to {path}...')
+            for qid_name in fp_node_names_by_qid_by_node:
+                f.write(f'<h1>{qid_name[5:]}</h1>\n')
+                for node_name in fp_node_names_by_qid_by_node[qid_name]:
+                    # Print node_name with the color
+                    word_color, key, translation, bold_style = get_node_color(node_name, qid_name)
+                    background_color = '#f0f0f0' if bold_style != '' else 'lightgray'
+                    key = 'source-word#' + key
+                    f.write(
+                        f'  <p><button class="colorButton" data-group="{key}" onclick="changeColor(this)" style="background-color:{background_color}">'
+                        f'<span style="color:{word_color};{bold_style}">{node_name}</span>{translation}'
+                        f'</button> → ')
+
+                    # Iterate over the words in the node_names, and print each with its color
+                    for word in fp_node_names_by_qid_by_node[qid_name][node_name]:
+                        word_color, key, translation, bold_style = get_node_color(word, qid_name)
+                        background_color = '#f0f0f0' if bold_style != '' else 'lightgray'
+                        key = 'target-word#' + key
+                        f.write(
+                            f'<button class="colorButton" data-group="{key}" onclick="changeColor(this)" style="background-color:{background_color}">'
+                            f'<span style="color:{word_color};{bold_style}">{word}</span>{translation}'
+                            f'</button> ')
+
+                    f.write('</p>\n')
+
+            f.write('<br/>')
+
+            # Close the HTML tags
+            f.write("""
+            </body>
+            </html>
+            """)
+        print('Done.')
 
     def init_model(self, data):
         self.model = Model(
             in_channels=data.num_features,
-            hidden_channels=config['model']['num_hidden'],
-            out_channels=data.y.size(1),  # config['model']['embedding_size'],
-            num_layers=config['model']['num_layers'],
-            dropout=config['model']['dropout'],
+            # hidden_channels=self.config['num_hidden'],
+            out_channels=data.y.size(1),  # config['embedding_size'],
+            bias=self.config['bias'],
+            # num_layers=self.config['num_layers'],
+            # dropout=self.config['dropout'],
             # num_relations=data.num_relations,
             # metadata=data.metadata(),
         )
 
         # self.model = GAT(in_channels=data.num_features,
-        #             hidden_channels=self.config['model']['num_hidden'],
+        #             hidden_channels=self.config['num_hidden'],
         #             out_channels=data.num_features, #num_classes
-        #             heads=self.config['model']['num_heads'],
-        #             num_layers=self.config['model']['num_layers'],
-        #             dropout=self.config['model']['dropout'],
+        #             heads=self.config['num_heads'],
+        #             num_layers=self.config['num_layers'],
+        #             dropout=self.config['dropout'],
         #             dtype=torch.float32)
 
         self.model.to(self.device)
@@ -1600,22 +1695,23 @@ class LinkPredictor(object):
         plots = [] if plots is None else plots
 
         print('\nValidation set performance:')
-        _, _, ideal_threshold, _, _, _, _, _, _, _ = self.evaluate(
+        _, _, ideal_threshold, _, _, _, _, _, _, _, _, _ = self.evaluate(
             self.data.val_mask, plots, print_human_readable_predictions, True, threshold,
-            compute_ideal_threshold=compute_ideal_threshold)
+            compute_ideal_threshold=compute_ideal_threshold, print_highest_qid_correlations=False)  # True)
 
         for lang in self.gt_langs:
             print(f'\nValidation set performance for {lang}:')
-            lang_mask = self.data.x[:, self.all_langs.index(lang) + 3] == 1
+            lang_mask = torch.zeros(len(self.data.x), dtype=torch.bool)
+            lang_mask[self.word_node_idxs_by_lang[lang]] = True
             lang_mask = lang_mask.to(self.device)
             lang_mask &= self.data.val_mask.to(self.device)
 
-            _, _, _, _, _, _, _, _, _, _ = self.evaluate(
+            _, _, _, _, _, _, _, _, _, _, _, _ = self.evaluate(
                 lang_mask, [], False, True, ideal_threshold if threshold is None else threshold,
                 compute_ideal_threshold=False)
 
         print('\nTest set performance:')
-        test_loss, test_auc, _, false_positives, false_negatives, test_precision, test_recall, acc, test_f1, f1_loss = self.evaluate(
+        test_loss, test_auc, _, false_positives, false_negatives, test_precision, test_recall, acc, test_f1, f1_loss, _, _ = self.evaluate(
             self.data.test_mask, [], print_human_readable_predictions, True,
             ideal_threshold if threshold is None else threshold, compute_ideal_threshold=False)
         # print(
@@ -1678,7 +1774,7 @@ class LinkPredictor(object):
             edge_label_index=(
                 self.TARGET_EDGE_TYPE, self.train_data[self.TARGET_EDGE_TYPE].edge_label_index.to(self.device)),
             edge_label=self.train_data[self.TARGET_EDGE_TYPE].edge_label.to(self.device),
-            batch_size=self.config['train']['batch_size'],  # number of edges per batch
+            batch_size=self.config['batch_size'],  # number of edges per batch
             shuffle=True,
             subgraph_type='bidirectional',
         )
@@ -1718,20 +1814,6 @@ class LinkPredictor(object):
         print('Val data:', self.val_data, '\n')
         print('Test data:', self.test_data, '\n')
 
-    # def export_dataset(self):
-    #     writer = Writer('data/sd_word_graph')
-    #
-    #     graph = dgl.heterograph(
-    #         {edge_type: (edge_store.edge_index[0], edge_store.edge_index[1]) for edge_type, edge_store in
-    #          zip(self.data.edge_types, self.data.edge_stores) if 'rev_' not in edge_type[1]},
-    #     )
-    #
-    #     nlabels = graph.ndata['label']
-    #     num_classes = len(self.node_labels_all)
-    #
-    #     writer.add_graph(name='SD Word Graph', graph=graph, nlabels=nlabels, num_nlabel_types=num_classes)
-    #     writer.close()
-
     def add_hop_edges_to_graph(self, graph, max_hops=2):
         # add edges for 2-hops to the graph (number of conv layers)
         for node in tqdm(graph, desc=f'Adding {max_hops}-hop edges to graph'):
@@ -1761,6 +1843,7 @@ class LinkPredictor(object):
         print('Done partitioning graph')
 
         # create a list of bit masks (one for each color)
+        self.color_masks = []
         for color in range(max(color_by_node.values()) + 1):
             mask = torch.zeros(hop_graph.number_of_nodes(), dtype=torch.bool)
             for node, node_color in color_by_node.items():
@@ -1768,49 +1851,62 @@ class LinkPredictor(object):
                     node_idx = self.word_node_idx_by_name[node]
                     mask[node_idx] = True
 
-            # # split mask into two masks of equal size (to reduce memory usage)
-            # (mask1, mask2) = torch.split(mask, math.ceil(mask.size(0) / 2))
-            # # fill up the masks with "False" values to bring them back to the original size
-            # mask1 = torch.cat((mask1, torch.zeros(mask.size(0) - mask1.size(0), dtype=torch.bool)))
-            # mask2 = torch.cat((torch.zeros(mask.size(0) - mask2.size(0), dtype=torch.bool), mask2))
-
             self.color_masks.append(mask.to(self.device))
-            # self.color_masks.append(mask1.to(self.device))
-            # self.color_masks.append(mask2.to(self.device))
 
         # assert that the masks are complete
         assert (sum([m.sum() for m in self.color_masks]).item() == len(self.color_masks[0]))
 
-    def build_dataset(self, select_only_gt_langs=True):
-        # path = osp.join(osp.dirname(osp.realpath(__file__)), '../../data/MovieLens')
-        # dataset = MovieLens(path, model_name='all-MiniLM-L6-v2')
-        # self.data = dataset[0].to(self.device)
-        #
-        # # Add user node features for message passing:
-        # self.data['user'].x = torch.eye(self.data['user'].num_nodes, device=self.device)
-        # # del self.data['user'].num_nodes
-        #
-        # # Add a reverse ('movie', 'rev_rates', 'user') relation for message passing:
-        # self.data = T.ToUndirected()(self.data)
-        # # del self.data['movie', 'rev_rates', 'user'].edge_label  # Remove "reverse" label.
-        #
-        # # Perform a link-level split into training, validation, and test edges:
-        # self.train_data, self.val_data, self.test_data = T.RandomLinkSplit(
-        #     num_val=0.1,
-        #     num_test=0.1,
-        #     neg_sampling_ratio=0.0,
-        #     edge_types=[('user', 'rates', 'movie')],
-        #     rev_edge_types=[('movie', 'rev_rates', 'user')],
-        # )(self.data)
-        # return
+    def plot_class_counts(self):
+        print('Plotting class counts...')
 
-        # self.G = build_example_network()
+        # count how often each class occurs in self.data
+        class_counts = torch.sum(self.data.y, dim=0).cpu().numpy()
+        class_counts = {f'{self.sd_node_names[i]}': count for i, count in enumerate(class_counts)}
+
+        # get the actual QIDs
+        class_counts = {re.search(r'([0-9]+.*?)(?= \()', key).group(1): count for key, count in class_counts.items()}
+
+        # plot the class counts
+        plt.figure(figsize=(20, 10))
+        plt.tight_layout()
+        plt.title('Class counts')
+        plt.xlabel('Class')
+        plt.ylabel('Count')
+        plt.bar(class_counts.keys(), class_counts.values())
+        plt.xticks(rotation=-90)
+        plt.show()
+
+    def save_dataset(self):
+        # save the dataset with cPickle
+        path = f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
+        print(f'Saving dataset to {path}')
+        with open(path, 'wb') as f:
+            cPickle.dump((self.data, self.sd_node_idx_by_name, self.word_node_idx_by_name, self.sd_node_names,
+                          self.word_node_names, self.word_node_idxs_by_lang, self.word_node_names_by_sd_name,
+                          self.forbidden_neg_train_edges, self.train_data, self.val_data, self.test_data,
+                          self.color_masks), f)
+        print('Done.')
+
+    def load_dataset(self, model_path):
+        # load the dataset with cPickle
+        self.update_original_run_name(model_path)
+        path = f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
+        print(f'Loading dataset from {path}')
+        with open(path, 'rb') as f:
+            gc.disable()  # disable garbage collection to speed up loading
+            self.data, self.sd_node_idx_by_name, self.word_node_idx_by_name, self.sd_node_names, self.word_node_names, \
+                self.word_node_idxs_by_lang, self.word_node_names_by_sd_name, self.forbidden_neg_train_edges, \
+                self.train_data, self.val_data, self.test_data, self.color_masks = cPickle.load(f)
+            gc.enable()  # enable garbage collection again
+        print('Done.')
+
+    def build_dataset(self, additional_lang=None):
         self.build_network()  # also contains languages without gt sds
-        complete_graph = self.G
-        if select_only_gt_langs:
-            subgraph = self.G.subgraph([n for n in self.G.nodes if
-                                        self.G.nodes[n]['lang'] in self.gt_langs.union({'semantic_domain'})])
-            self.G, complete_graph = subgraph, self.G
+        subgraph = self.G.subgraph([n for n in self.G.nodes if
+                                    self.G.nodes[n]['lang'] in self.gt_langs.union(
+                                        {'semantic_domain', additional_lang} if additional_lang is not None else {
+                                            'semantic_domain'})])
+        self.G, complete_graph = subgraph, self.G
 
         self.sd_node_names = [node for node in self.G.nodes if self.G.nodes[node]["lang"] == "semantic_domain"]
         self.word_node_names = [node for node in self.G.nodes if self.G.nodes[node]["lang"] != "semantic_domain"]
@@ -1821,7 +1917,7 @@ class LinkPredictor(object):
         self.sd_node_idx_by_name = {node: i for i, node in enumerate(self.sd_node_names)}
         self.word_node_idx_by_name = {node: i for i, node in enumerate(self.word_node_names)}
 
-        self.word_node_names_by_sd_name = {sd_node: self.G.neighbors(sd_node) for sd_node in self.sd_node_names}
+        self.word_node_names_by_sd_name = {sd_node: list(self.G.neighbors(sd_node)) for sd_node in self.sd_node_names}
 
         sd_edges = [(self.sd_node_idx_by_name[edge[0]], self.word_node_idx_by_name[edge[1]]) for edge in self.G.edges if
                     edge[0] in semantic_domain_nodes_set and edge[1] in word_nodes_set]
@@ -1837,7 +1933,9 @@ class LinkPredictor(object):
                    self.G.nodes[node]["lang"] == lang] for
             lang
             in set(lang_by_word_node_idx.values())}
-        print({lang: len(self.word_node_idxs_by_lang[lang]) for lang in self.word_node_idxs_by_lang})
+        num_words_by_lang = {lang: len(self.word_node_idxs_by_lang[lang]) for lang in self.word_node_idxs_by_lang}
+        print(num_words_by_lang)
+        print(sum(num_words_by_lang.values()))
 
         self.convert_empty_questions_by_lang_to_tensors()
 
@@ -1873,7 +1971,8 @@ class LinkPredictor(object):
                 qid_feature[self.word_node_idx_by_name[node]])
 
         # concatenate the features
-        x = torch.cat((qid_count_feature, degree_feature, weighted_degree_feature, lang_feature, qid_feature), dim=1)
+        # x = torch.cat((qid_count_feature, degree_feature, weighted_degree_feature, lang_feature, qid_feature), dim=1)
+        x = torch.cat((qid_count_feature, degree_feature, weighted_degree_feature, qid_feature), dim=1)
 
         # self.data = HeteroData()
         # self.data['semantic_domain'].x = torch.eye(len(semantic_domain_nodes), device=self.device)
@@ -1889,15 +1988,18 @@ class LinkPredictor(object):
         # data['semantic_domain', 'has', 'semantic_domain'].edge_index = ...
         # self.data['word', 'aligns_with', 'word'].edge_index = alignment_edge_index
         self.data = Data(x=x, edge_index=alignment_edge_index, y=qid_feature, edge_weight=alignment_edge_weight)
+        # add an attribute that stores the language of each node
+
         self.data = T.ToUndirected()(self.data)
         # del self.data['word', 'rev_has', 'semantic_domain'].edge_label  # remove "reverse" label
         self.data = self.data.to(self.device)
         print(self.data)
         # self.export_dataset()
+        # self.plot_class_counts()
 
-        if not torch.cuda.is_available():  # hack to run this only on my laptop
+        if 0 and not torch.cuda.is_available():  # hack to run this only on my laptop
             self.palette = sns.color_palette('pastel')
-            self.palette += [self.palette[2]]
+            self.palette += self.palette
             self.palette = {lang: color for lang, color in zip(self.node_labels_all, self.palette)}
             node_colors = [self.palette[self.G.nodes[node]["lang"]]
                            # if "lang" in self.G.nodes[node] else self.palette[lang_by_node_idx[node]]
@@ -1922,31 +2024,18 @@ class LinkPredictor(object):
             self.plot_subgraph(complete_graph, random.choice(
                 [node for node in complete_graph.nodes if complete_graph.nodes[node]["lang"] == "gej"]))
 
-            # # False negatives
-            # self.plot_subgraph(self.G, 'fra: contraire')  # Word, Opposite
-            # self.plot_subgraph(self.G, 'fra: réservé')  # Speak little
-            # self.plot_subgraph(self.G, 'fra: poursuivre')  # Obsessed
-            # self.plot_subgraph(self.G, 'fra: crier')  # Sports
-            # self.plot_subgraph(self.G, 'fra: laver')  # Care for hair
-            #
-            # # False positives
-            # self.plot_subgraph(self.G, 'fra: femelle')  # Hope
-            # self.plot_subgraph(self.G, 'fra: fondre')  # Crop failure?
-            # self.plot_subgraph(self.G, 'fra: disette')  # Escape
-            # self.plot_subgraph(self.G, 'fra: communion')  # Track an animal
-            # self.plot_subgraph(self.G, 'fra: affaire')  # Group of things
-
             # plot_graph_with_labels(self.G, "Complete data", node_sizes, node_colors, edges, target_edges, self.palette,
             #                        node_name_by_index, 100)
 
         self.split_dataset()
         self.partition_graph()
+        self.save_dataset()
 
         print("Creating train loaders...")
         self.train_loaders = [NeighborLoader(
             self.data,
-            num_neighbors=[-1],  # performs better with two iterations of neighbor sampling, don't ask me why
-            batch_size=self.config['train']['batch_size'],
+            num_neighbors=[-1],
+            batch_size=self.config['batch_size'],
             input_nodes=self.data.train_mask.to(self.device) & color_mask.to(self.device),
             shuffle=True,
             subgraph_type='bidirectional',
@@ -1954,24 +2043,6 @@ class LinkPredictor(object):
             (self.data.train_mask.to(self.device) & color_mask.to(self.device)).sum() > 0]
 
         self.criterion = f1_loss_function
-        # self.criterion = precision_loss_function
-
-        ## These two loss functions lead to worse F1 scores
-        # weight_by_class = torch.tensor([0.0] * self.data.y.size(1))
-        # most_common_class_count = self.data.y.sum(dim=0).max()
-        # for i in range(len(weight_by_class)):
-        #     class_count = self.data.y[:, i].sum()
-        #     if class_count > 0:
-        #         weight_by_class[i] = most_common_class_count / class_count
-        #     else:
-        #         weight_by_class[i] = 10000.0
-        # self.criterion = torch.nn.CrossEntropyLoss(weight=weight_by_class.to(self.device))
-
-        # y = self.data.y # self.train_data[self.TARGET_EDGE_TYPE].edge_label
-        # pos_weight = (y == 0.).sum() / y.sum()
-        # self.criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-        # self.criterion = FalsePN_Loss(pos_weight, precision_reward=10.0).to(self.device)
 
         return
 
@@ -2017,87 +2088,105 @@ class LinkPredictor(object):
 
     def run_gnn_pipeline(self):
         # torch.manual_seed(1)  # fixed seed for reproducibility
-        if 'cuda' in self.device:
-            # assert that this GPU's memory is not used by anyone else
-            assert torch.cuda.memory_allocated(self.device) == 0
 
-        # self.build_dataset(False)
-        # # self.sample_dataset()
-        # self.load_model('data/3_models/model_F10.13?_th-0.1?_eng+fra+ind+yor_jumping-snowflake-104.bin') # model_AUC-1.00_th0.10_deu+eng+fra+gej+hin+ind+spa_gallant-water-2.bin')
-        # threshold = 0.1
-        # self.test(threshold=threshold) # This is not expressive because this contains the LRL languages, too.
-        # # self.predict('eng: dog', threshold)
-        # # self.predict('eng: swift', threshold)
-        # # self.predict('eng: water', threshold)
-        # #
-        # # self.predict('deu: läutern', threshold)
-        # # self.predict('deu: wasser', threshold)
-        # # self.predict('deu: schnell', threshold)
-        # # self.predict_for_languages(['deu', 'gej'], threshold)
-        # self.predict_for_languages(['yor'], threshold)
-        # return
+        # self.build_dataset()
+        self.build_dataset(additional_lang='deu')
+        path_1 = 'model_legendary-disco-286_precision0.79_F10.35_th-1.00_deu+eng+fra+hin+ind+mal+nep+por+spa+swa.bin'  # 'model_fancy-blaze-294_precision0.71_F10.28_th-1.00_deu+eng+fra+hin+ind+mal+nep+por+spa+swa.bin' # 'model_denim-valley-216_precision0.91_F10.54_th-1.00_deu+eng+fra+hin+ind+mal+nep+por+spa+swa.bin'  # 'model_dauntless-plant-200_precision0.77_F10.46_th-1.00_deu+eng+fra+gej+hin+ind+mal+meu+nep+por+spa+swa+tpi+yor.bin' # 'model_breezy-pine-160.bin' # 'model_smart-frog-156_precision0.77_F10.45_th-1.00_deu+eng+fra+gej+hin+ind+mal+meu+nep+por+spa+swa+tpi+yor.bin'  # 'model_morning-breeze-153_precision0.75_F10.43_th-1.00_deu+eng+fra+gej+hin+ind+mal+meu+nep+por+spa+swa+tpi+yor.bin' # 'model_worldly-silence-151_precision0.68_F10.39_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin' #'model_dulcet-mountain-132_precision0.46_F10.25_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin' # model_fast-dew-9_precision0.47_F10.21_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor_precision0.51_F10.25_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin'  # 'model_proud-pond-143.bin'
+        # self.load_dataset(path_1)
+        self.load_model(path_1)
+        threshold = 1.00
+        # self.test(threshold=threshold, compute_ideal_threshold=False)
+        # self.evaluate(plots=['explain false positives'], threshold=threshold,
+        #               compute_ideal_threshold=False, compute_additional_metrics=True)
+
+        # self.build_dataset(additional_lang='deu')
+        self.predict_for_languages(['deu'],
+                                   threshold)  # , 'yor', 'gej', 'tpi', 'meu'], threshold)
 
         self.build_dataset()
-        # self.init_model(self.data)
-        #
-        # self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config['optimizer'][
-        #     'learning_rate'], weight_decay=self.config['optimizer']['weight_decay'])
-        # assert (self.data.is_undirected())
-        #
-        # # ml wandb.init(project="Link prediction, Movie Lens dataset")
-        # self.train_link_predictor()
+        self.predict_for_languages(['eng', 'fra', 'ind', 'por', 'swa', 'spa', 'hin', 'mal', 'nep'],
+                                   threshold)  # , 'yor', 'gej', 'tpi', 'meu'], threshold)
 
-        path_1 = 'data/3_models/model_fast-dew-9_precision0.47_F10.21_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin'  # 'data/3_models/model_proud-pond-143.bin'
-        self.load_model(path_1)
-        # path_1 = f"{self.config['train']['model_path']}_{wandb.run.name}.bin"
-        # self.save_model(path_1)
+        return
+
+        self.build_dataset()
+        self.init_model(self.data)
+
+        self.optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.config[
+            'learning_rate'], weight_decay=self.config['weight_decay'])
+        assert (self.data.is_undirected())
+
+        self.train_link_predictor()
+
+        # path_1 = 'model_charmed-mountain-56_epoch32_val-loss0.935_checkpoint.bin' # 'model_fast-dew-9_precision0.47_F10.21_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor_precision0.51_F10.25_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin'  # 'model_proud-pond-143.bin'
+        # self.load_model(path_1)
+        path_1 = f"model_{wandb.run.name}.bin"
+        self.save_model(path_1)
         test_loss, test_auc, ideal_threshold, test_f1, test_precision = self.test(eval_train_set=True, threshold=1.00,
-                                                                                  compute_ideal_threshold=False)  # plots = ['weights', 'probs']
-        path_2 = path_1[
-                 :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
-        self.save_model(path_2)
-        os.remove(path_1)
-
-        self.predict('eng: bright', 1.00)
-
-        # load and test model again
-        # self.load_model(path)
-        # self.test(print_human_readable_predictions=False, threshold=ideal_threshold)
-
-        # self.explain()
+                                                                                  compute_ideal_threshold=False,
+                                                                                  plots=['weights'])
+        if "th-" not in path_1:
+            path_2 = path_1[
+                     :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
+            self.save_model(path_2)
+            os.remove(os.path.join(self.config['model_path'], path_1))
 
 
 if __name__ == '__main__':
     print("GNN setup started")
 
-    parser = argparse.ArgumentParser(description='Arguments for multi label classification training')
-
-    parser.add_argument(
-        '-config',
-        help='Path to data self.config file',
-        type=str, default='configs/gnn_train.yaml',
-    )
-
-    args, remaining_args = parser.parse_known_args()
-
-    with open(args.config) as file:
-        config = yaml.safe_load(file)
-
+    project_name = "GCN node prediction (link semantic domains to target words), 18 langs (nep) dataset"
     wandb.init(
         # project="GCN node prediction (link semantic domains to target words), eng-fra-ind-hin-spa-gej-deu dataset",
         # project="GCN node prediction (link semantic domains to target words), eng-fra-ind-por-swa-spa-gej-deu dataset",
         # project="GCN node prediction (link semantic domains to target words), eng-fra-ind-yor dataset",
-        project="GCN node prediction (link semantic domains to target words), 18 langs (nep) dataset",
+        project=project_name,
         config={
-            "learning_rate": config['optimizer']['learning_rate'],
-            "epochs": config['train']['epochs'],
-            "batch_size": config['train']['batch_size'],
-            "dropout": config['model']['dropout'],
-            "weight_decay": config['optimizer']['weight_decay'],
-            "hidden_channels": config['model']['num_hidden'],
-            "num_layers": config['model']['num_layers'],
+            "batch_size": 10000,
+            "epochs": 1000,
+
+            "bias": True,  # works much better than False
+            # "dropout": 0.5,
+            "min_alignment_count": 1,  # 4,
+            "min_edge_weight": 0.2,  # 0.2, # 0.1 ==> set batch size to 4000
+            "patience": 5,
+            "warm_up": 30,  # 10,
+
+            "optimizer": "adam",
+            "learning_rate": 0.05,  # 0.005,
+            "weight_decay": 0.0,  # 0.005,
+            "model_path": "data/3_models/",
+            "plot_path": "data/8_plots/",
+            # "hidden_channels": config['model']['num_hidden'],
+            # "num_layers": config['model']['num_layers'],
             # "num_heads": config['model']['num_heads'],
         })
+
+    # sweep_config = {
+    #     'method': 'random',  # grid, random, bayesian
+    #     'metric': {
+    #         'name': 'test loss',
+    #         'goal': 'minimize'
+    #     },
+    #     'parameters': {
+    #         'batch_size': {
+    #             'values': [20000, 10000, 5000]
+    #         },
+    #         'learning_rate': {
+    #             'values': [0.05, 0.005, 0.0005]
+    #         },
+    #         'optimizer': {
+    #             'values': ['adam', 'nadam', 'sgd', 'rmsprop']
+    #         },
+    #         'weight_decay': {
+    #             'values': [0.0, 0.00005, 0.0005, 0.005, 0.05]
+    #         },
+    #         # 'activation': {
+    #         #     'values': ['relu', 'elu', 'selu', 'softmax']
+    #         # }
+    #     }
+    # }
+    # sweep_id = wandb.sweep(sweep_config, entity="sweep", project=project_name)
 
     # dc = LinkPredictionDictionaryCreator(
     #     ['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-hin', 'bid-spa', 'bid-gej', 'bid-deu'])
@@ -2121,11 +2210,14 @@ if __name__ == '__main__':
     # 'data/7_graphs/graph-yor-normalized-edge-weights-filtered-0.2.cpickle')
 
     dc = LinkPredictionDictionaryCreator(['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-por', 'bid-swa', 'bid-spa',
-                                          'bid-mya', 'bid-cmn', 'bid-hin', 'bid-mal', 'bid-nep', 'bid-urd', 'bid-pes',
-                                          'bid-gej', 'bid-deu', 'bid-yor', 'bid-tpi', 'bid-meu'])
-    lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'por', 'swa', 'spa', 'hin', 'mal', 'nep'}  # 'urd', 'pes'
-                       , config,
-                       'data/7_graphs/graph-nep.cpickle')
+                                          'bid-hin', 'bid-mal', 'bid-nep', 'bid-deu'])
+    # 'bid-yor', 'bid-tpi', 'bid-meu', 'bid-gej'])
+    # 'bid-urd', 'bid-pes', 'bid-mya', 'bid-cmn',
+    lp = LinkPredictor(dc, {'eng', 'fra', 'ind', 'por', 'swa', 'spa', 'hin', 'mal', 'nep'}
+                       , wandb.config,
+                       graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_additional_words_15.cpickle')
+    # graph_path=f'data/7_graphs/graph-nep_50-qids_min_alignment_count_{wandb.config["min_alignment_count"]}.cpickle',
+    # ignored_langs={'pes', 'urd', 'cmn', 'mya'})
 
     lp.run_gnn_pipeline()
     print("GNN pipeline finished")
