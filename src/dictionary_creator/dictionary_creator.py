@@ -554,12 +554,6 @@ class DictionaryCreator(ABC):
         func(*args, **kwargs)
         self._set_progress(step_name, save)
 
-    def _remove_punctuation(self):
-        for lang in self.target_langs:
-            for wtxt in self.words_by_text_by_lang[lang]:
-                if wtxt in self.punctuation:
-                    del self.words_by_text_by_lang[lang][wtxt]
-
     def _preprocess_data(self):
         self._load_data()
         self._build_sds()
