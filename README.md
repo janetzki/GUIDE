@@ -1,4 +1,4 @@
-# dictionary_creator
+# GUIDE (GNN-based Unified Indigenous Dictionary Engine)
 
 Create semantic domain dictionaries for low-resource languages
 
