@@ -1,13 +1,11 @@
-import numpy as np
 import os
-import time
-import random
+
+import numpy as np
+import openai
+import pandas as pd
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 
-import pandas as pd
-import openai
-
-# Use GPT-3 to label bible verses (identify semantic domains) by answering pre-generated y/n questions
+# Use GPT-3 to label Bible verses (identify semantic domains) by answering pre-generated y/n questions
 
 # model_name = "ada:ft-personal:sd-labeler-8-2023-04-17-14-23-46"
 ### model_name = "davinci:ft-personal:sd-labeler-8-2023-04-17-15-12-52"
