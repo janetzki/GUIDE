@@ -1,6 +1,10 @@
-# GUIDE (GNN-based Unified Indigenous Dictionary Engine)
+# GUIDE (Graph-based Unified Indigenous Dictionary Engine)
 
 Create semantic domain dictionaries for low-resource languages
+
+⚠️ The model, multilingual test set, and new dictionaries are coming soon.
+
+
 
 ## Introduction
 
