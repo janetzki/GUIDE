@@ -433,6 +433,7 @@ class DictionaryCreator(ABC):
             with open(os.path.join('data/5_raw_bibles', self.bibles_by_bid[bid]),
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
+            # self.verses_by_bid[bid] = [verse if verse != '<range>\n' else '\n' for verse in self.verses_by_bid[bid]]
             assert len(self.verses_by_bid[bid]) == self.num_verses
 
     def _load_additional_word_qid_mappings(self):

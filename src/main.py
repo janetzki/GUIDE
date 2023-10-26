@@ -32,13 +32,7 @@ if __name__ == '__main__':  # pragma: no cover
         'bid-mkn',
         'bid-cmn-s',
 
-        # # 'bid-arb-vd',
-        # # 'bid-arb-nav',
-        'bid-pes',
-        'bid-urd',
-        'bid-tel',
-        # # 'bid-mya', # Burmese
-        # # unused langs: tha
+
 
         # BIBLES WITHOUT SEMANTIC DOMAINS
         'bid-deu-1951',
@@ -51,7 +45,7 @@ if __name__ == '__main__':  # pragma: no cover
         'bid-hmo',
     ],
         score_threshold=0.2,
-        gt_langs=['eng', 'fra', 'spa', 'por', 'ind', 'swh', 'hin', 'mal', 'npi', 'ben', 'mkn', 'cmn', 'pes', 'urd'])
+        gt_langs=['eng', 'fra', 'spa', 'por', 'ind', 'swh', 'hin', 'mal', 'npi', 'ben', 'mkn', 'cmn'])
     dc.create_dictionary(load=False, save=True, plot_wtxt='neither', min_count=4, print_reciprocal_ranks=True,
                          plot_subgraph=False)
 
