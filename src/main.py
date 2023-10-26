@@ -15,33 +15,38 @@ if __name__ == '__main__':  # pragma: no cover
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY-1000', 'bid-fra-fob-1000'], score_threshold=0.2)
     # dc = LinkPredictionDictionaryCreator(['bid-eng-DBY', 'bid-fra-fob', 'bid-tpi', 'bid-meu'], score_threshold=0.2)
     dc = LinkPredictionDictionaryCreator([
+        # LATIN BIBLES WITH SEMANTIC DOMAINS
         'bid-eng-web',
-        'bid-fra-fob',
+        'bid-fra-sbl',
         'bid-ind',
-        'bid-por',
-        'bid-swa',
-        'bid-spa',
+        'bid-por-bsl',
+        'bid-swh-ulb',
+        # 'bid-swh-onen',
+        'bid-spa-blm',
 
-        # non-latin
-        # 'bid-mya',
-        # 'bid-cmn',
+        # NON-LATIN BIBLES WITH SEMANTIC DOMAINS
         'bid-hin',
         'bid-mal',
-        'bid-nep',
-        # 'bid-urd',
-        # 'bid-pes',
+        'bid-npi',
+        'bid-ben',
+        'bid-mkn',
+        'bid-cmn-s',
 
-        # no semantic domains
-        # 'bid-gej',
-        'bid-deu',
-        # 'bid-yor',
-        # 'bid-tpi',
-        # 'bid-meu',
+
+
+        # BIBLES WITHOUT SEMANTIC DOMAINS
+        'bid-deu-1951',
+        'bid-azb',
+        'bid-ibo',
+        'bid-gej',
+        'bid-yor',
+        'bid-tpi',
+        'bid-meu',
+        'bid-hmo',
     ],
-        score_threshold=0.2)
+        score_threshold=0.2,
+        gt_langs=['eng', 'fra', 'spa', 'por', 'ind', 'swh', 'hin', 'mal', 'npi', 'ben', 'mkn', 'cmn'])
     dc.create_dictionary(load=False, save=True, plot_wtxt='neither', min_count=4, print_reciprocal_ranks=True,
                          plot_subgraph=False)
 
-    for verse_id in range(25042, 25047):  # Lk 2:1-5
-        dc._plot_subgraph(lang='eng', text='graven', min_count=1, verse_id=verse_id)
     dc._plot_subgraph(lang='eng', text='book', min_count=4)

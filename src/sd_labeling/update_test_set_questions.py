@@ -1,5 +1,4 @@
 import re
-
 from difflib import SequenceMatcher
 
 import pandas as pd
@@ -20,7 +19,7 @@ for test_file_num in tqdm([2, 4, 6], total=3):
         old_question = df_test.at[index, 'direct_question']
         qid = df_test.at[index, 'qid']
 
-        # skip questions that have already been updated (i.e., that contain a bible reference)
+        # skip questions that have already been updated (i.e., that contain a Bible reference)
         if len(re.findall(r' \(\w{3} \d+:\d+\) ', old_question)) > 0:
             continue
 
