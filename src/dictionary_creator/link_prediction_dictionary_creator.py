@@ -1,6 +1,6 @@
+import math
 from collections import defaultdict
 
-import math
 import networkx as nx
 import seaborn as sns
 from matplotlib import pyplot as plt
@@ -497,7 +497,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
                           print_reciprocal_ranks=False, plot_subgraph=True):
         self._execute_and_track_state(self._preprocess_data, load=load, save=save)
         self._execute_and_track_state(self._map_words_to_qids, load=load, save=save)
-        self._execute_and_track_state(self._remove_stop_words, load=load, save=save)
+        # self._execute_and_track_state(self._remove_stop_words, load=load, save=save)
 
         # build the graph with single words as nodes
         self._execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
@@ -505,6 +505,7 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
 
         if plot_subgraph:
             self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
+        return
 
         self._execute_and_track_state(self._predict_lemmas, load=load, save=save)
         self._execute_and_track_state(self._contract_lemmas, load=load, save=save)
