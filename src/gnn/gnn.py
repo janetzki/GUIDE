@@ -3,9 +3,9 @@ import math
 import os
 import pprint
 import re
-import textwrap
 from collections import defaultdict, deque
 from functools import partial
+from math import sqrt
 
 import _pickle as cPickle
 import editdistance as editdistance
@@ -30,6 +30,60 @@ from tqdm import tqdm
 
 from src.dictionary_creator.link_prediction_dictionary_creator import LinkPredictionDictionaryCreator
 
+
+def latexify(fig_width=None, fig_height=None, columns=1):
+    """Set up matplotlib's RC params for LaTeX plotting.
+    Call this before plotting a figure.
+
+    Parameters
+    ----------
+    fig_width : float, optional, inches
+    fig_height : float,  optional, inches
+    columns : {1, 2}
+    """
+
+    # code adapted from http://www.scipy.org/Cookbook/Matplotlib/LaTeX_Examples
+
+    # Width and max height in inches for IEEE journals taken from
+    # computer.org/cms/Computer.org/Journal%20templates/transactions_art_guide.pdf
+
+    assert (columns in [1, 2])
+
+    if fig_width is None:
+        fig_width = 3.39 if columns == 1 else 6.9  # width in inches
+        # fig_width = 12 if columns==1 else 17 # width in inches
+
+    if fig_height is None:
+        golden_mean = (sqrt(5) - 1.0) / 2.0  # Aesthetic ratio
+        fig_height = fig_width * golden_mean  # height in inches
+
+    MAX_HEIGHT_INCHES = 8.0
+    if fig_height > MAX_HEIGHT_INCHES:
+        print("WARNING: fig_height too large:" + fig_height +
+              "so will reduce to" + MAX_HEIGHT_INCHES + "inches.")
+        fig_height = MAX_HEIGHT_INCHES
+
+    params = {
+        # 'backend': 'ps',
+        'text.latex.preamble': '\\usepackage{gensymb}',
+        'axes.labelsize': 10,  # fontsize for x and y labels (was 10)
+        'axes.titlesize': 10,
+        'lines.linewidth': 2.0,
+        'axes.linewidth': 2.0,
+        'font.size': 20,  # was 10
+        'legend.fontsize': 10,  # was 10
+        'xtick.labelsize': 8,
+        'ytick.labelsize': 8,
+        'lines.markersize': 2,
+        # 'text.usetex': True,
+        'figure.figsize': [fig_width, fig_height],
+        'font.family': 'serif'
+    }
+
+    plt.rcParams.update(params)
+
+
+latexify(6, None)
 
 # NOTES
 # Der Unterschied zwischen edge_index und edge_label_index ist, dass edge_index die Kanten für den Encoder sind, während
@@ -176,6 +230,8 @@ class Model(torch.nn.Module):
         self.out_channels = out_channels
 
         self.conv1 = GCNConv(in_channels, out_channels, add_self_loops=False, normalize=False, improved=True, bias=bias)
+        # self.conv2 = GCNConv(out_channels, out_channels, add_self_loops=False, normalize=False, improved=True, bias=bias)
+        # self.conv1 = DNAConv(in_channels, heads=1, add_self_loops=False, normalize=False, improved=True, bias=bias)
 
         # Smart initialize weight matrix
         print("Smart initializing weight matrix...")
@@ -257,7 +313,8 @@ class Model(torch.nn.Module):
 
         return z
 
-    def visualize_weights(self, title, epoch=None, loss=None, plot_path=None):
+    def visualize_weights(self, title, epoch=None, loss=None, plot_path=None, select_first_n_sdqs=50):
+        # return # for DNAConv
         print('Visualizing weights...')
 
         # set size to 2000 x 2000 pixels
@@ -265,11 +322,15 @@ class Model(torch.nn.Module):
 
         if type(self.conv1) is GCNConv:
             weight_matrix = self.conv1.lin.weight.detach().cpu()
-            bias_matrix = self.conv1.bias.detach().cpu() if self.conv1.bias is not None else None
+            bias_vector = self.conv1.bias.detach().cpu() if self.conv1.bias is not None else None
+            if select_first_n_sdqs is not None:
+                offset = self.in_channels - self.out_channels
+                weight_matrix = weight_matrix[:select_first_n_sdqs, :select_first_n_sdqs + offset]
+                bias_vector = bias_vector[:select_first_n_sdqs] if bias_vector is not None else None
         elif type(self.conv1) is DNAConv:
             head = 0
             weight_matrix = self.conv1.multi_head.lin_v.weight[head].detach().cpu()
-            bias_matrix = self.conv1.multi_head.lin_v.bias[head].detach().cpu() if self.conv1.multi_head.lin_v.bias[
+            bias_vector = self.conv1.multi_head.lin_v.bias[head].detach().cpu() if self.conv1.multi_head.lin_v.bias[
                                                                                        head] is not None else None
         else:
             raise NotImplementedError
@@ -286,28 +347,50 @@ class Model(torch.nn.Module):
         plt.title('Weight Matrix Heatmap ' + title)
         plt.xlabel('Columns')
         plt.ylabel('Rows')
-        if epoch is not None:
-            file_name = f'plot_weight_matrix_{epoch}.png'
+        epoch = epoch if epoch is not None else 'epoch-unspecified'
+        if plot_path is not None:
+            file_name = f'plot_weight_matrix_{epoch}.pdf'
             file_path = os.path.join(plot_path, file_name)
             self.plot_file_paths.append(file_path)
+            print(f'Saving plot to {file_path}')
             plt.savefig(file_path)
             plt.close()
+
+            # Save weight_matrix_np to txt
+            file_name = f'weight_matrix_{epoch}_{title}.txt'
+            file_path = os.path.join(plot_path, file_name)
+            print(f'Saving weight matrix to {file_path}')
+            np.savetxt(file_path, weight_matrix.numpy(), fmt='%f')
         else:
             plt.show()
 
-            if bias_matrix is not None:
-                bias_matrix_np = bias_matrix.numpy()
+        if bias_vector is not None:
+            bias_vector_np = bias_vector.numpy()
 
-                # Add 1 dimension to the vectors
-                bias_matrix_np = np.expand_dims(bias_matrix_np, axis=1)
+            # Add 1 dimension to the vectors
+            bias_vector_np = np.expand_dims(bias_vector_np, axis=1)
 
-                # bias has only one dimension, so we have to make it a 2D array to plot it
-                bias_matrix_np = np.repeat(bias_matrix_np, repeats=100, axis=0)
-                plt.imshow(bias_matrix_np, cmap='bwr', norm=norm, interpolation='nearest')
-                plt.colorbar()
-                plt.title('Bias Vector Heatmap ' + title)
-                plt.xlabel('Columns')
-                plt.ylabel('Rows')
+            # bias has only one dimension, so we have to make it a 2D array to plot it
+            bias_vector_np = np.repeat(bias_vector_np, repeats=10, axis=1)
+            plt.imshow(bias_vector_np, cmap='bwr', interpolation='nearest'),  # norm=norm
+            plt.colorbar()
+            plt.title('Bias Vector Heatmap ' + title)
+            plt.xlabel('Columns')
+            plt.ylabel('Rows')
+            if plot_path is not None:
+                file_name = f'plot_bias_vector_{epoch}.pdf'
+                file_path = os.path.join(plot_path, file_name)
+                print(f'Saving plot to {file_path}')
+                plt.savefig(file_path)
+                plt.show()
+                plt.close()
+
+                # Save bias_vector_np to txt
+                file_name = f'bias_vector_{epoch}_{title}.txt'
+                file_path = os.path.join(plot_path, file_name)
+                print(f'Saving bias vector to {file_path}')
+                np.savetxt(file_path, bias_vector.numpy(), fmt='%f')
+            else:
                 plt.show()
 
         # reset size to 400 x 400 pixels
@@ -390,7 +473,6 @@ class LinkPredictor(object):
 
         self.model = None
         self.optimizer = None
-        self.palette = None
         # self.train_loader = None
         self.df_additional_words = None
 
@@ -586,8 +668,8 @@ class LinkPredictor(object):
         self.filter_edges_by_weight()
         self.find_empty_questions_by_lang([n for n in long_qid_name_by_qid.values() if n in self.G])
 
-        # remove target language nodes with no edge to a GT lang node because we cannot predict their semantic domain
-        # We need this. Otherwise, performance and recall drop. --> Why? Shouln't it improve because nodes without edges get no predictions by default?
+        self.num_removed_gt_qid_links = 0  # reset again in case we accidentally initialized it with a higher value
+        # remove nodes with no edge to a GT lang node because we cannot predict their semantic domain
         for lang in tqdm(self.all_langs, total=len(self.all_langs), desc='Removing nodes with no edge to a GT lang'):
             for node in nodes_by_lang[lang]:
                 if len([n for n in self.G.neighbors(node) if self.G.nodes[n]['lang'] in self.gt_langs]) == 0:
@@ -623,7 +705,7 @@ class LinkPredictor(object):
 
     def filter_edges_by_weight(self):
         # filter out all edges between words with a small weight
-        # (This does not compromise the recall metric.)
+        # (This does not compromise the recall metric because does not remove word-SDQ edges.)
         removed_edges = []
         for edge in tqdm(self.G.edges(data='weight'), desc='Filtering edges by weight', total=len(self.G.edges)):
             if edge[2] < self.config['min_edge_weight']:
@@ -658,13 +740,15 @@ class LinkPredictor(object):
                 temp[qid_idx] = True
             self.empty_questions_by_lang[lang] = temp
 
-    def plot_subgraph(self, graph, node):
+    def plot_subgraph(self, graph, node, target_node=None):
+        assert target_node is None or target_node in graph.nodes
         non_latin_languages = {'npi', 'hin', 'mal', 'cmn', 'ben', 'mkn'}  # difficult to plot
-        target_langs = set(self.all_langs) - non_latin_languages
-        target_langs.add('semantic_domain_question')
-        self.palette = sns.color_palette('pastel')
-        self.palette += self.palette
-        self.palette = {lang: color for lang, color in zip(target_langs, self.palette)}
+        other_removed_languages = {'deu', 'hmo', 'azb', 'tpi', 'yor'}  # removed to improve readability
+        # order target_langs alphabetically
+        target_langs = ['semantic_domain_question'] + sorted(
+            list(self.all_langs - non_latin_languages - other_removed_languages))
+        palette = sns.color_palette('pastel')  # 'tab20'
+        palette = {lang: color for lang, color in zip(target_langs, palette)}
         filtered_word_nodes = [word for word in graph.nodes() if graph.nodes[word]['lang'] in target_langs]
 
         filtered_weighted_edges = []
@@ -697,10 +781,14 @@ class LinkPredictor(object):
         neighbors_3rd_order = set()
         for neighbor_1st_order in filtered_word_graph.neighbors(node):
             neighbors_1st_order.add(neighbor_1st_order)
-            # for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
-            #     neighbors_2nd_order.add(neighbor_2nd_order)
-            #     for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):
-            #         neighbors_3rd_order.add(neighbor_3rd_order)
+            for neighbor_2nd_order in filtered_word_graph.neighbors(neighbor_1st_order):
+                if filtered_word_graph.nodes[neighbor_2nd_order][
+                    'lang'] == 'semantic_domain_question' or neighbor_2nd_order == target_node:
+                    neighbors_2nd_order.add(neighbor_2nd_order)
+                for neighbor_3rd_order in filtered_word_graph.neighbors(neighbor_2nd_order):
+                    if neighbor_3rd_order == target_node:
+                        neighbors_2nd_order.add(neighbor_2nd_order)
+                        neighbors_3rd_order.add(neighbor_3rd_order)
 
         # avoid that graph gets too large or messy for plotting
         max_nodes = 50
@@ -725,11 +813,25 @@ class LinkPredictor(object):
         width = max(6, int(len(selected_nodes) * 1.5))  # / 2.2))
         plt.figure(figsize=(width, width))
 
+        # remove all langs from palette and target_langs that are not in the subgraph
+        palette = {lang: color for lang, color in palette.items() if
+                   lang in {lang for node, lang in displayed_subgraph.nodes(data='lang')}}
+        target_langs = [lang for lang in target_langs if
+                        lang in {lang for node, lang in displayed_subgraph.nodes(data='lang')}]
+
         # use a different node color for each language
-        node_colors = [self.palette[data['lang']] for node_name, data in displayed_subgraph.nodes(data=True)]
+        node_colors = [palette[data['lang']] for node_name, data in displayed_subgraph.nodes(data=True)]
+
+        # rename 'semantic_domain_question' to 'SDQ'
+        if 'semantic_domain_question' in palette:
+            palette['SDQ'] = palette.pop('semantic_domain_question')
+            target_langs[0] = 'SDQ'
+
+        # put SDQ first in the palette
+        palette = {'SDQ': palette.pop('SDQ'), **palette}
 
         # show all the colors in a legend
-        plt.legend(handles=[Patch(color=self.palette[lang], label=lang) for lang in target_langs])
+        plt.legend(handles=[Patch(color=palette[lang], label=lang) for lang in target_langs], prop={'size': 20})
 
         # define position of nodes in figure
         pos = nx.nx_agraph.graphviz_layout(displayed_subgraph)
@@ -737,10 +839,20 @@ class LinkPredictor(object):
         # draw nodes
         nx.draw_networkx_nodes(displayed_subgraph, pos=pos, node_color=node_colors)
 
+        def get_node_label_name(node_name):
+            lang, text = node_name.split(': ')
+            if lang != 'qid':
+                return text
+            else:
+                qid = self.get_qid_from_node_name(node_name).replace(' ', '-')
+                sd = self.get_sd_from_node_name(node_name)
+                # text = '\n'.join(textwrap.wrap(text, width=20))
+                return f'{qid}\n{sd}'
+
         # draw only word texts as node labels
         nx.draw_networkx_labels(displayed_subgraph, pos=pos,
-                                labels={node_name: '\n'.join(textwrap.wrap(node_name.split(': ')[1], width=20))
-                                        for node_name in displayed_subgraph.nodes()})
+                                labels={node_name: get_node_label_name(node_name)
+                                        for node_name in displayed_subgraph.nodes()}, font_size=20)
 
         # draw edges (thicker edges for more frequent alignments)
         for edge in displayed_subgraph.edges(data='weight'):
@@ -748,16 +860,21 @@ class LinkPredictor(object):
 
             if 'semantic_domain_question' == graph.nodes[edge[0]]['lang']:
                 color, _, _, _ = self.get_edge_color(edge[1], edge[0])
+                weight = 0.2
             elif 'semantic_domain_question' == graph.nodes[edge[1]]['lang']:
                 color, _, _, _ = self.get_edge_color(edge[0], edge[1])
+                weight = 0.2
             else:
-                color = 'black'
-            if color == 'red':
+                color = 'gray'
+            if color in ('red', 'orange'):
                 continue
+
+            if color == 'green':
+                color = palette['SDQ']
 
             nx.draw_networkx_edges(displayed_subgraph, pos=pos, edgelist=[edge],
                                    # caution: might fail in debug mode with Python 3.10 instead of Python 3.9 or 3.11
-                                   width=[math.log(weight * 10) + 1], edge_color=color, alpha=0.5)
+                                   width=[math.log(weight * 10) + 1], edge_color=color)  # , alpha=0.5)
 
         # draw edge labels with 2 decimal places
         edge_weights = nx.get_edge_attributes(displayed_subgraph, 'weight')
@@ -767,9 +884,13 @@ class LinkPredictor(object):
                        graph.nodes[k[0]]['lang'] != 'semantic_domain_question' and
                        graph.nodes[k[1]]['lang'] != 'semantic_domain_question'}
         if len(edge_weights):
-            nx.draw_networkx_edge_labels(displayed_subgraph, pos, edge_labels=edge_labels)
+            nx.draw_networkx_edge_labels(displayed_subgraph, pos, edge_labels=edge_labels, font_size=15)
 
-        plt.title(f'Nodes close to "{node}"')
+        lang, text = node.split(': ')
+        plt.title(f'Words aligned with "{text}" ({lang}) and their linked SDQs', fontsize=20)
+        plt.tight_layout()
+        plt.margins(x=0.1, y=0.1)
+        plt.savefig(f'plots/subgraph_{node}.pdf')
         plt.show()
 
     def train(self):
@@ -841,7 +962,7 @@ class LinkPredictor(object):
             checkpoint_path = f"model_{wandb.run.name}_epoch{epoch}_val-loss{val_loss:.3f}_checkpoint.bin"
             if early_stopper.early_stop(val_loss, epoch, self.save_model, checkpoint_path):
                 print("Early stopping")
-                self.create_gif()
+                self.create_gif()  # outcomment for DNAConv
                 self.load_model(early_stopper.last_checkpoint)
                 break
 
@@ -852,6 +973,7 @@ class LinkPredictor(object):
         empty_questions = torch.stack(empty_questions).to(self.device)
         if function is None:
             return self.criterion(y_hat, y, empty_questions)
+            # return self.criterion(y_hat.to(self.device).float(), y.to(self.device).float())#, empty_questions)
         else:
             return function(y_hat, y, empty_questions)
 
@@ -889,8 +1011,7 @@ class LinkPredictor(object):
         similar_words.sort(key=lambda x: x[1])
         return similar_words
 
-    def export_dictionary_to_html(self, lang, path):
-        # follow this structure
+    def export_dictionary_to_html(self, lang, path, predicted_words_by_qid):
         # <h2> [SD Name] </h2>
         # (1) [QID]
         # - [Word 1], [Word 2], [Word 3], ...
@@ -936,7 +1057,7 @@ class LinkPredictor(object):
                     if len(original_answers) > 0 and original_answers[-1] != ',':
                         f.write(',')
 
-                    for word_node in self.word_node_names_by_qid_name[qid_node]:
+                    for word_node in predicted_words_by_qid[qid_node]:
                         word_lang, word = word_node.split(': ')
                         if word_lang == lang:
                             color, _, translation, _ = self.get_edge_color(word_node, qid_node)
@@ -989,7 +1110,7 @@ class LinkPredictor(object):
         # file.write('"' + str(prediction[6]) + '"\n')  # explanation
 
     def print_human_readable_predictions(self, y, y_hat, link_probs, mask, threshold, max_print_words=10,
-                                         save_to_csv_path=None, word_idx_map=None, max_print_total=100, ):
+                                         save_to_csv_path=None, word_idx_map=None, max_print_total=100):
         if save_to_csv_path:
             print(f'Saving predictions to {save_to_csv_path}...')
             file = open(save_to_csv_path, 'w')
@@ -1001,6 +1122,7 @@ class LinkPredictor(object):
         # for each element in out, lookup all edges in eval_data[self.TARGET_EDGE_TYPE].edge_label_index
         count_printed_words = 0
         count_printed_total = 0
+        predicted_words_by_qid_node = defaultdict(list)
         assert (mask is None or len(mask) == len(link_probs))
         for word_idx, qid_preds in tqdm(enumerate(link_probs), total=len(link_probs)):
             if mask is not None and not mask[word_idx]:
@@ -1030,6 +1152,8 @@ class LinkPredictor(object):
                 if pred == 1 and not is_correct:
                     similar_words = self.find_similar_words_in_sd(word, qid)
                     explanation = self.explain_false_positive(original_word_idx, qid_idx)
+
+                predicted_words_by_qid_node[qid].append(word)
                 if save_to_csv_path:
                     if pred == 1:
                         self.add_prediction_row_to_csv(file, [qid, word, prob.item(), pred_raw.item(), is_correct])
@@ -1048,6 +1172,8 @@ class LinkPredictor(object):
         if file:
             file.write('Done\n')
             file.close()
+
+        return predicted_words_by_qid_node
 
     @staticmethod
     def find_ideal_threshold(target, predicted):
@@ -1363,11 +1489,13 @@ class LinkPredictor(object):
 
         # print all positive predictions
         positive_prediction_mask = link_probs.sum(dim=1) >= threshold
-        self.print_human_readable_predictions(y, y_hat, link_probs, positive_prediction_mask, threshold,
+        predicted_words_by_qid_node = self.print_human_readable_predictions(y, y_hat, link_probs,
+                                                                            positive_prediction_mask, threshold,
                                               max_print_words=int(1e10),
                                               save_to_csv_path=f'data/6_results/predicted_sds_{langs}_{self.wandb_original_run_name}.csv',
                                               word_idx_map=node_idxs, max_print_total=int(1e10))
         print('\n')
+        return predicted_words_by_qid_node
 
     def explain_false_positive(self, node_idx, qid_idx, fp_node_name_by_qid_by_node=None):
         node_name = self.word_node_names[node_idx]
@@ -1632,7 +1760,7 @@ class LinkPredictor(object):
         print('\nValidation set performance:')
         _, ideal_threshold, _, _, _, _, _, _, _ = self.evaluate(
             self.data.val_mask, plots, print_human_readable_predictions, True, threshold,
-            compute_ideal_threshold=compute_ideal_threshold, print_highest_qid_correlations=False)  # True)
+            compute_ideal_threshold=compute_ideal_threshold, print_highest_qid_correlations=True)
 
         print('\nTest set performance:')
         test_loss, _, false_positives, false_negatives, test_precision, test_recall, test_f1, _, _ = self.evaluate(
@@ -1655,6 +1783,7 @@ class LinkPredictor(object):
         recall_by_lang = list(sorted(recall_by_lang.items(), key=lambda item: item[0]))
         f1_by_lang = list(sorted(f1_by_lang.items(), key=lambda item: item[0]))
         path = f'data/6_results/precision_recall_f1.csv'
+        print(f'Saving precision, recall, and F1 to {path}')
         if not os.path.exists(path):
             # create file empty file if it does not exist yet
             with open(path, 'w') as f:
@@ -1664,7 +1793,7 @@ class LinkPredictor(object):
             f.write(','.join(
                 [f'{precision_by_lang[idx][0]}_precision,{recall_by_lang[idx][0]}_recall,{f1_by_lang[idx][0]}_f1' for
                  idx in range(len(self.gt_langs))]) + '\n')
-            f.write(f'{self.wandb_original_run_name},{self.graph_path},')
+            f.write(f'{wandb.run.name},{self.graph_path},')
             f.write(','.join([f'{precision_by_lang[idx][1]},{recall_by_lang[idx][1]},{f1_by_lang[idx][1]}' for idx in
                               range(len(self.gt_langs))]) + '\n')
 
@@ -1677,8 +1806,8 @@ class LinkPredictor(object):
 
     def split_dataset(self):
         split = T.RandomNodeSplit(
-            num_val=0.1,
-            num_test=0.1,
+            num_val=0.10,
+            num_test=0.10,
         )
         self.data = split(self.data)
         print(self.data)
@@ -1810,10 +1939,30 @@ class LinkPredictor(object):
 
         self.convert_empty_questions_by_lang_to_tensors()
 
-        if not torch.cuda.is_available():  # hack to run this only on my laptop
-            self.plot_subgraph(self.G, 'eng: cousin')
-            self.plot_subgraph(self.G, 'por: hábito')
-            self.plot_subgraph(complete_graph, 'deu: läutern')
+        if False and not torch.cuda.is_available():  # hack to run this only on my laptop
+            self.plot_subgraph(complete_graph, 'meu: varani')  # true positive
+            self.plot_subgraph(complete_graph, 'ibo: ahụọnụ')  # true positive
+            self.plot_subgraph(complete_graph, 'gej: màmayɔviwoa')  # true positive
+
+            self.plot_subgraph(complete_graph, 'eng: overdrive')  # false positive
+            self.plot_subgraph(complete_graph, 'ind: enak')  # false positive
+
+            self.plot_subgraph(complete_graph, 'swh: kishindo')  # false negative
+            self.plot_subgraph(complete_graph, 'fra: lumineux')  # false negative
+
+            self.plot_subgraph(complete_graph, 'eng: earth')
+            self.plot_subgraph(complete_graph, 'eng: responsibility')
+            self.plot_subgraph(complete_graph, 'eng: six')
+            self.plot_subgraph(complete_graph, 'eng: left')
+            self.plot_subgraph(complete_graph, 'eng: paper')
+            self.plot_subgraph(complete_graph, 'eng: camel')
+            self.plot_subgraph(complete_graph, 'eng: pelican')
+            self.plot_subgraph(complete_graph, 'eng: blacksmith')
+            self.plot_subgraph(complete_graph, 'eng: crane')
+            self.plot_subgraph(complete_graph, 'eng: grandchild')
+            self.plot_subgraph(self.G, 'qid: Surrender 4.8.3.4 1 (What words refer to surrendering to an enemy?)',
+                               target_node='qid: Evaluate, test 3.2.2.3 1 (What words refer to the process of determining the truth of something?)')
+            # self.plot_subgraph(self.G, 'eng: heavy')
 
             # # plot neighborhoods
             # self.plot_subgraph(self.G, random.choice(
@@ -1824,6 +1973,7 @@ class LinkPredictor(object):
             #     [node for node in complete_graph.nodes if complete_graph.nodes[node]["lang"] == "deu"]))
             # self.plot_subgraph(complete_graph, random.choice(
             #     [node for node in complete_graph.nodes if complete_graph.nodes[node]["lang"] == "gej"]))
+            exit(0)
 
         # # Create language feature (for word nodes)
         # lang_feature = torch.zeros(len(self.word_node_names), len(self.all_langs))
@@ -1871,7 +2021,6 @@ class LinkPredictor(object):
         # new_values = torch.cat([v1, v2], dim=0)
         #
         x = torch.cat((qid_count_feature, degree_feature, weighted_degree_feature, qid_feature), dim=1)
-        # x = torch.cat((qid_count_feature, weighted_degree_feature, qid_feature), dim=1)
 
         alignment_edge_index = torch.tensor(alignment_edges).transpose(0, 1)
         alignment_edge_weight = torch.tensor(
@@ -1887,6 +2036,12 @@ class LinkPredictor(object):
         # self.plot_class_counts()
 
         self.split_dataset()
+
+        ## normalize the pos weights by the number of positive examples in the training set
+        ## we have few positive examples, so we need to weight them more
+        # y = self.data.y[self.data.train_mask]
+        # pos_weight = (y == 0.).sum() / y.sum()
+        # self.criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.device))
         # self.partition_graph()
         # self.save_dataset()
 
@@ -1897,24 +2052,26 @@ class LinkPredictor(object):
         self.update_original_run_name(path_1)
         # self.build_dataset()
 
-        # for lang in tqdm(self.gt_langs, desc='Making predictions', total=len(self.gt_langs)):
-        #     self.export_dictionary_to_html(lang, f'data/6_results/dict_{lang}.html')
-
         self.load_graph()  # only use this in combination with self.load_dataset()
         self.load_dataset()  # crashes for 'deu'
 
+        # for lang in tqdm(self.gt_langs, desc='Making predictions', total=len(self.gt_langs)):
+        #     self.export_dictionary_to_html(lang, f'data/6_results/dict_{lang}.html')
+
         self.load_model(path_1)
+
         threshold = 0.999  # 1.0
-        self.test(threshold=threshold, compute_ideal_threshold=False)
+        # self.test(threshold=threshold, compute_ideal_threshold=False)
         # self.evaluate(plots=['explain false positives'], threshold=threshold,
         #               compute_ideal_threshold=False)
 
-        self.predict_for_languages(self.gt_langs, threshold)
+        # self.predict_for_languages(self.gt_langs, threshold)
 
-        # for lang in self.target_langs:
-        #     print(f'Predicting for {lang}...')
-        #     self.build_dataset(additional_target_lang=lang)
-        #     self.predict_for_languages([lang], threshold)
+        for lang in ['meu']:  # self.target_langs:
+            print(f'Predicting for {lang}...')
+            self.build_dataset(additional_target_lang=lang)
+            predicted_words_by_qid_node = self.predict_for_languages([lang], threshold)
+            self.export_dictionary_to_html(lang, f'data/6_results/dict_{lang}.html', predicted_words_by_qid_node)
 
     def run_gnn_pipeline(self):
         print('Running GNN pipeline...')
@@ -1986,13 +2143,17 @@ if __name__ == '__main__':
     #  'bid-npi', 'bid-ben', 'bid-mkn', 'bid-cmn-s', 'bid-pes', 'bid-urd'])#, 'bid-arb-vd', 'bid-tel', 'bid-mya'])
     # ['bid-eng-web', 'bid-fra-sbl'])
 
-    # wandb.run.name += '_ablate_no_mwmi'
+    suffix = '_count_words'
+    wandb.run.name += suffix
     lp = LinkPredictor(dc,
                        gt_langs={'eng', 'fra', 'ind', 'por', 'swh', 'spa', 'hin', 'mal',
                                  'npi', 'ben', 'mkn', 'cmn'},  # , 'pes', 'urd'}
                        target_langs={'deu', 'azb', 'ibo', 'gej', 'yor', 'tpi', 'meu', 'hmo'},
                        config=wandb.config,
-                       graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_76_14_langs_no-stopword-removal.cpickle')  # CHECK THAT USED BIBLES ARE CORRECT!
+                       graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_90_12_langs_no-stopword-removal_{suffix}.cpickle')  # CHECK THAT USED BIBLES ARE CORRECT!
+    lp.wandb_original_run_name += suffix
+    print(lp.wandb_original_run_name)
+    print(wandb.run.name)
 
     # print the torch seed for reproducibility
     print(f'Torch seed: {torch.initial_seed()}')
@@ -2001,5 +2162,5 @@ if __name__ == '__main__':
     lp.num_removed_gt_qid_links, model_path = 218890, 'model_fine-dust-677_precision0.43_F10.29_th-1.00_azb+ben+cmn+deu+eng+fra+gej+hin+hmo+ibo+ind+mal+meu+mkn+npi+pes+por+spa+swh+tpi+urd+yor.bin'
 
     model_path = lp.run_gnn_pipeline()
-    # lp.make_predictions(model_path)
+    lp.make_predictions(model_path)
     print("Finished.")
