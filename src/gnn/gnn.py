@@ -85,6 +85,7 @@ def latexify(fig_width=None, fig_height=None, columns=1):
 
 latexify(6, None)
 
+
 # NOTES
 # Der Unterschied zwischen edge_index und edge_label_index ist, dass edge_index die Kanten für den Encoder sind, während
 # edge_label_index die Kanten für den Decoder sind.
@@ -456,7 +457,7 @@ class EarlyStopper:
         return False
 
 
-class LinkPredictor(object):
+class ExecutionEnvironment(object):
     def __init__(self, dc, gt_langs, target_langs, config, graph_path):
         self.dc = dc
         self.wandb_original_run_name = wandb.run.name
@@ -475,6 +476,7 @@ class LinkPredictor(object):
         self.optimizer = None
         # self.train_loader = None
         self.df_additional_words = None
+        self.dataset_path = None
 
         # saved graph
         self.G = None
@@ -534,7 +536,7 @@ class LinkPredictor(object):
             sd_name = self.dc.sds_by_lang['eng'][self.dc.sds_by_lang['eng']['cid'] == cid]['category'].iloc[0]
             # try:
             question = self.dc.sds_by_lang['eng'][(self.dc.sds_by_lang['eng']['cid'] == cid) & (
-                        self.dc.sds_by_lang['eng']['question_index'] == question_idx)]['question'].iloc[0]
+                    self.dc.sds_by_lang['eng']['question_index'] == question_idx)]['question'].iloc[0]
             # except IndexError:
             #     question = empty_questions[qid]
             long_qid_name = f'qid: {sd_name} {qid} ({question})'
@@ -1491,9 +1493,10 @@ class LinkPredictor(object):
         positive_prediction_mask = link_probs.sum(dim=1) >= threshold
         predicted_words_by_qid_node = self.print_human_readable_predictions(y, y_hat, link_probs,
                                                                             positive_prediction_mask, threshold,
-                                              max_print_words=int(1e10),
-                                              save_to_csv_path=f'data/6_results/predicted_sds_{langs}_{self.wandb_original_run_name}.csv',
-                                              word_idx_map=node_idxs, max_print_total=int(1e10))
+                                                                            max_print_words=int(1e10),
+                                                                            save_to_csv_path=f'data/6_results/predicted_sds_{langs}_{self.wandb_original_run_name}.csv',
+                                                                            word_idx_map=node_idxs,
+                                                                            max_print_total=int(1e10))
         print('\n')
         return predicted_words_by_qid_node
 
@@ -1883,11 +1886,12 @@ class LinkPredictor(object):
             cPickle.dump((self.data, self.qid_node_idx_by_name, self.word_node_idx_by_name, self.qid_node_names,
                           self.word_node_names, self.word_node_idxs_by_lang, self.word_node_names_by_qid_name,
                           self.forbidden_neg_train_edges, self.train_data, self.val_data, self.test_data), f)
-        print('Done.')
+        self.dataset_path = path
+        print('Done saving dataset.')
 
-    def load_dataset(self):
+    def load_dataset(self, path=None):
         # load the dataset with cPickle
-        path = f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
+        path = path if path is not None else f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
         print(f'Loading dataset from {path}')
         with open(path, 'rb') as f:
             gc.disable()  # disable garbage collection to speed up loading
@@ -1896,7 +1900,7 @@ class LinkPredictor(object):
                 self.train_data, self.val_data, self.test_data = cPickle.load(f)
             gc.enable()  # enable garbage collection again
         self.convert_empty_questions_by_lang_to_tensors()
-        print('Done.')
+        print('Done loading dataset.')
 
     def build_dataset(self, additional_target_lang=None):
         if additional_target_lang is not None:
@@ -2043,9 +2047,9 @@ class LinkPredictor(object):
         # pos_weight = (y == 0.).sum() / y.sum()
         # self.criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(self.device))
         # self.partition_graph()
-        # self.save_dataset()
+        self.save_dataset()
 
-    def make_predictions(self, model_path):
+    def evaluate_model(self, model_path, dataset_path):
         print('Making predictions...')
 
         path_1 = model_path
@@ -2053,7 +2057,7 @@ class LinkPredictor(object):
         # self.build_dataset()
 
         self.load_graph()  # only use this in combination with self.load_dataset()
-        self.load_dataset()  # crashes for 'deu'
+        self.load_dataset(dataset_path)  # crashes for 'deu'
 
         # for lang in tqdm(self.gt_langs, desc='Making predictions', total=len(self.gt_langs)):
         #     self.export_dictionary_to_html(lang, f'data/6_results/dict_{lang}.html')
@@ -2061,17 +2065,25 @@ class LinkPredictor(object):
         self.load_model(path_1)
 
         threshold = 0.999  # 1.0
-        # self.test(threshold=threshold, compute_ideal_threshold=False)
+        self.test(threshold=threshold, compute_ideal_threshold=False)
         # self.evaluate(plots=['explain false positives'], threshold=threshold,
         #               compute_ideal_threshold=False)
 
         # self.predict_for_languages(self.gt_langs, threshold)
 
-        for lang in ['meu']:  # self.target_langs:
-            print(f'Predicting for {lang}...')
-            self.build_dataset(additional_target_lang=lang)
-            predicted_words_by_qid_node = self.predict_for_languages([lang], threshold)
-            self.export_dictionary_to_html(lang, f'data/6_results/dict_{lang}.html', predicted_words_by_qid_node)
+        # if "th-" not in path_1:
+        #     path_2 = path_1[
+        #              :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
+        #     self.save_model(path_2)
+        #     os.remove(os.path.join(self.config['model_path'], path_1))
+        #     return path_2
+        # return path_1
+
+        # for lang in self.target_langs:
+        #     print(f'Predicting for {lang}...')
+        #     self.build_dataset(additional_target_lang=lang)
+        #     predicted_words_by_qid_node = self.predict_for_languages([lang], threshold)
+        #     self.export_dictionary_to_html(lang, f'data/6_results/dict_{lang}.html', predicted_words_by_qid_node)
 
     def run_gnn_pipeline(self):
         print('Running GNN pipeline...')
@@ -2084,26 +2096,13 @@ class LinkPredictor(object):
 
         self.train_link_predictor()
 
-        # path_1 = 'model_charmed-mountain-56_epoch32_val-loss0.935_checkpoint.bin' # 'model_fast-dew-9_precision0.47_F10.21_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor_precision0.51_F10.25_th-1.00_cmn+deu+eng+fra+gej+hin+ind+mal+meu+mya+nep+pes+por+spa+swa+tpi+urd+yor.bin'  # 'model_proud-pond-143.bin'
-        # self.load_model(path_1)
         path_1 = f"model_{wandb.run.name}.bin"
         self.save_model(path_1)
-        test_loss, ideal_threshold, test_f1, test_precision = self.test(threshold=0.999,
-                                                                        compute_ideal_threshold=False,
-                                                                        plots=['weights'])
-        if "th-" not in path_1:
-            path_2 = path_1[
-                     :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
-            self.save_model(path_2)
-            os.remove(os.path.join(self.config['model_path'], path_1))
-            return path_2
-        return path_1
+        return path_1, self.dataset_path
 
 
-if __name__ == '__main__':
-    print("GNN setup started")
-
-    project_name = "GCN node prediction (link semantic domains to target words), 18 langs (nep) dataset"
+def setup(mag_path):
+    project_name = "GCN node prediction (link semantic domains to target words), 20 langs dataset"
     wandb.init(
         project=project_name,
         config={
@@ -2123,44 +2122,33 @@ if __name__ == '__main__':
             "plot_path": "data/8_plots/",
         })
 
-    # dc = LinkPredictionDictionaryCreator(['bid-eng-web', 'bid-fra-fob', 'bid-ind', 'bid-por-bsl', 'bid-swh-1850', # 1st Bibles
-    #                                       'bid-spa-1909', 'bid-hin', 'bid-mal', 'bid-npi', 'bid-deu-1951'])
-    # dc = LinkPredictionDictionaryCreator(['bid-eng-rv', 'bid-fra-lsg', 'bid-ind', 'bid-por-2018', 'bid-swh-ulb',  # 2nd Bibles
-    #                                       'bid-spa-blm', 'bid-hin', 'bid-mal', 'bid-npi', 'bid-deu-1951'])
-    # dc = LinkPredictionDictionaryCreator(['bid-eng-asvbt', 'bid-fra-sbl', 'bid-ind', 'bid-por-bsl', 'bid-swh-onen', # 3rd Bibles
-    #                                       'bid-spa-1909', 'bid-hin', 'bid-mal', 'bid-npi', 'bid-deu-1951'])
-    # dc = LinkPredictionDictionaryCreator(['bid-eng-web', 'bid-fra-sbl', 'bid-ind', 'bid-por-bsl', 'bid-swh-ulb', # mixed Bibles
-    #                                       'bid-spa-blm', 'bid-hin', 'bid-mal', 'bid-npi', 'bid-mkn'])
-    # dc = LinkPredictionDictionaryCreator(
-    #     ['bid-eng-web', 'bid-fra-sbl', 'bid-ind', 'bid-por-bsl', 'bid-swh-ulb', 'bid-spa-blm', 'bid-cmn-s', 'bid-hin',
-    #      'bid-mal', 'bid-npi', 'bid-ben', 'bid-mkn', 'bid-mya', 'bid-deu-1951', 'bid-azb', 'bid-ibo', 'bid-gej',
-    #      'bid-yor', 'bid-tpi', 'bid-meu', 'bid-hmo']) # 21 langs
     dc = LinkPredictionDictionaryCreator(
         ['bid-eng-web', 'bid-fra-sbl', 'bid-ind', 'bid-por-bsl', 'bid-swh-ulb', 'bid-spa-blm',
          'bid-hin', 'bid-mal', 'bid-npi', 'bid-mkn', 'bid-ben', 'bid-cmn-s', 'bid-pes', 'bid-urd',
          'bid-deu-1951', 'bid-azb', 'bid-ibo', 'bid-gej', 'bid-yor', 'bid-tpi', 'bid-meu', 'bid-hmo'])
-    # ['bid-eng-web', 'bid-fra-sbl', 'bid-ind', 'bid-por-bsl', 'bid-swh-ulb', 'bid-spa-blm', 'bid-hin', 'bid-mal',
-    #  'bid-npi', 'bid-ben', 'bid-mkn', 'bid-cmn-s', 'bid-pes', 'bid-urd'])#, 'bid-arb-vd', 'bid-tel', 'bid-mya'])
-    # ['bid-eng-web', 'bid-fra-sbl'])
 
-    suffix = '_count_words'
-    wandb.run.name += suffix
-    lp = LinkPredictor(dc,
-                       gt_langs={'eng', 'fra', 'ind', 'por', 'swh', 'spa', 'hin', 'mal',
-                                 'npi', 'ben', 'mkn', 'cmn'},  # , 'pes', 'urd'}
-                       target_langs={'deu', 'azb', 'ibo', 'gej', 'yor', 'tpi', 'meu', 'hmo'},
-                       config=wandb.config,
-                       graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_90_12_langs_no-stopword-removal_{suffix}.cpickle')  # CHECK THAT USED BIBLES ARE CORRECT!
-    lp.wandb_original_run_name += suffix
-    print(lp.wandb_original_run_name)
-    print(wandb.run.name)
+    execution_env = ExecutionEnvironment(dc,
+                                         gt_langs={'eng', 'fra', 'ind', 'por', 'swh', 'spa', 'hin', 'mal', 'npi', 'ben',
+                                                   'mkn', 'cmn'},
+                                         target_langs={'deu', 'azb', 'ibo', 'gej', 'yor', 'tpi', 'meu', 'hmo'},
+                                         config=wandb.config,
+                                         # graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_90_12_langs_no-stopword-removal_{suffix}.cpickle')
+                                         graph_path=mag_path)
 
     # print the torch seed for reproducibility
     print(f'Torch seed: {torch.initial_seed()}')
     # torch.manual_seed(0)
+    return execution_env
 
-    lp.num_removed_gt_qid_links, model_path = 218890, 'model_fine-dust-677_precision0.43_F10.29_th-1.00_azb+ben+cmn+deu+eng+fra+gej+hin+hmo+ibo+ind+mal+meu+mkn+npi+pes+por+spa+swh+tpi+urd+yor.bin'
 
-    model_path = lp.run_gnn_pipeline()
-    lp.make_predictions(model_path)
-    print("Finished.")
+def train(mag_path):
+    execution_env = setup(mag_path)
+    execution_env.num_removed_gt_qid_links = 218890
+    model_path, data_split_path = execution_env.run_gnn_pipeline()
+    print(f'Done. Saved model at {model_path} and data split at {data_split_path}.')
+    # execution_env.make_predictions(model_path)
+
+
+def eval(model_file, mag_path, data_split_path):
+    execution_env = setup(mag_path)
+    execution_env.evaluate_model(model_file, data_split_path)

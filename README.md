@@ -13,7 +13,7 @@ image shows seven entries for the same semantic domain question in the newly cre
 ## Requirements
 
 Python 3.11 is recommended.
-To install requirements:
+To install the requirements:
 
 ```setup
 pip install -r requirements.txt
@@ -21,11 +21,21 @@ pip install -r requirements.txt
 
 ## Training
 
-⚠️ Coming soon
+To train GUIDE, run this command:
+
+```train
+python -m src.gnn.train.py --input-data raw_MAG.cpickle
+```
 
 ## Evaluation
 
-⚠️ Coming soon
+To evaluate GUIDE, run:
+
+```eval
+python -m src.gnn.eval.py --input-data raw_MAG.cpickle --data-split <path_to_data_split_file> --model-file <path_to_model_file>
+```
+
+The data split file and model file will be created during training.
 
 ## Pre-trained Model
 
