@@ -21,6 +21,8 @@ pip install -r requirements.txt
 
 ## Training
 
+⚠️ Work in progress. Updates are expected in the next few days.
+
 To train GUIDE, run this command:
 
 ```train
@@ -28,6 +30,8 @@ python -m src.gnn.train.py --input-data raw_MAG.cpickle
 ```
 
 ## Evaluation
+
+⚠️ Work in progress. Updates are expected in the next few days.
 
 To evaluate GUIDE, run:
 
