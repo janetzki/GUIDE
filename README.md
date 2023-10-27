@@ -5,11 +5,19 @@ This repository is the official implementation of my master's thesis.
 ![image](results/new_dictionary_entries_eng.png)
 ![image](results/new_dictionary_entries_gej.png)
 
-https://software.sil.org/fieldworks/flex
+Existing (black) semantic domain dictionary entries in [FLEx](https://software.sil.org/fieldworks/flex and newly
+predicted (green) ones: The upper image shows three entries that GUIDE added to the English dictionary and the lower
+image shows seven entries for the same semantic domain question in the newly created Mina-Gen dictionary.
+
 
 ## Requirements
 
-⚠️ Coming soon
+Python 3.11 is recommended.
+To install requirements:
+
+```setup
+pip install -r requirements.txt
+```
 
 ## Training
 
