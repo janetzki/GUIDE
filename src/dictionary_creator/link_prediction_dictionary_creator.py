@@ -502,10 +502,10 @@ class LinkPredictionDictionaryCreator(DictionaryCreator):
         # build the graph with single words as nodes
         self._execute_and_track_state(self._build_word_graph, step_name='_build_word_graph (raw)',
                                       load=load, save=save)
+        return
 
         if plot_subgraph:
             self._plot_subgraph(lang=plot_word_lang, text=plot_wtxt, min_count=min_count)
-        return
 
         self._execute_and_track_state(self._predict_lemmas, load=load, save=save)
         self._execute_and_track_state(self._contract_lemmas, load=load, save=save)

@@ -5,38 +5,52 @@ This repository is the official implementation of my master's thesis.
 ![image](results/new_dictionary_entries_eng.png)
 ![image](results/new_dictionary_entries_gej.png)
 
-Existing (black) semantic domain dictionary entries in [FLEx](https://software.sil.org/fieldworks/flex and newly
+Existing (black) semantic domain dictionary entries in [FLEx](https://software.sil.org/fieldworks/flex) and newly
 predicted (green) ones: The upper image shows three entries that GUIDE added to the English dictionary and the lower
 image shows seven entries for the same semantic domain question in the newly created Mina-Gen dictionary.
 
 
 ## Requirements
 
-Python 3.11 is recommended.
 To install the requirements:
 
 ```setup
-pip install -r requirements.txt
+chmod +x setup.sh
+./setup.sh
 ```
 
-## Training
+Download the Multilingual Alignment Graph (MAG)
+from [here](https://drive.google.com/file/d/1XITKTJ2YIII89kNQPtxFr9TwvIX9IyPW/view?usp=sharing).
 
-⚠️ Work in progress. Updates are expected in the next few days.
+## Preprocessing Pipeline
+
+You can skip the preprocessing and directly start to train the model by using the prepared file `final_mag.cpickle`.
+If you want to reproduce the preprocessing, run:
+
+```preprocess
+conda activate myenv
+python -m src.preprocess --output-directory data/0_state/
+python -m src.gnn.refine_mag --input-mag-directory data/0_state/ --output-mag-file final_mag.cpickle
+```
+
+Note that this does not include the Igbo and Gen-Mina languages because the source Bible translations are copyrighted.
+
+## Training
 
 To train GUIDE, run this command:
 
 ```train
-python -m src.gnn.train.py --input-data raw_MAG.cpickle
+conda activate myenv
+CUDA_VISIBLE_DEVICES=0 python -m src.gnn.train --input-mag-file final_mag.cpickle --output-model-file my_trained_model.bin --output-data-split-file my_data_split.bin
 ```
 
 ## Evaluation
 
-⚠️ Work in progress. Updates are expected in the next few days.
-
 To evaluate GUIDE, run:
 
 ```eval
-python -m src.gnn.eval.py --input-data raw_MAG.cpickle --data-split <path_to_data_split_file> --model-file <path_to_model_file>
+conda activate myenv
+CUDA_VISIBLE_DEVICES=0 python -m src.gnn.eval --input-mag-file final_mag.cpickle --input-model-file my_trained_model.bin --input-data-split-file my_data_split.bin --output-results-file my_results.json
 ```
 
 The data split file and model file will be created during training.

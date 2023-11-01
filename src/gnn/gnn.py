@@ -1,4 +1,5 @@
 import gc
+import json
 import math
 import os
 import pprint
@@ -350,7 +351,7 @@ class Model(torch.nn.Module):
         plt.ylabel('Rows')
         epoch = epoch if epoch is not None else 'epoch-unspecified'
         if plot_path is not None:
-            file_name = f'plot_weight_matrix_{epoch}.pdf'
+            file_name = f'plot_weight_matrix_{epoch}.png'
             file_path = os.path.join(plot_path, file_name)
             self.plot_file_paths.append(file_path)
             print(f'Saving plot to {file_path}')
@@ -379,7 +380,7 @@ class Model(torch.nn.Module):
             plt.xlabel('Columns')
             plt.ylabel('Rows')
             if plot_path is not None:
-                file_name = f'plot_bias_vector_{epoch}.pdf'
+                file_name = f'plot_bias_vector_{epoch}.png'
                 file_path = os.path.join(plot_path, file_name)
                 print(f'Saving plot to {file_path}')
                 plt.savefig(file_path)
@@ -458,15 +459,12 @@ class EarlyStopper:
 
 
 class ExecutionEnvironment(object):
-    def __init__(self, dc, gt_langs, target_langs, config, graph_path):
+    def __init__(self, dc, gt_langs, config, graph_path, model_path=None, dataset_path=None):
         self.dc = dc
         self.wandb_original_run_name = wandb.run.name
 
         self.gt_langs = gt_langs
-        self.target_langs = target_langs
-        self.all_langs = set(gt_langs | target_langs)
-        assert len(self.all_langs) == len(gt_langs) + len(target_langs)  # disjunct sets
-
+        self.target_langs = None
         self.graph_path = graph_path
         self.config = config
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -476,7 +474,8 @@ class ExecutionEnvironment(object):
         self.optimizer = None
         # self.train_loader = None
         self.df_additional_words = None
-        self.dataset_path = None
+        self.model_path = model_path if model_path is not None else f'data/3_models/{self.wandb_original_run_name}.cpickle'
+        self.dataset_path = dataset_path if dataset_path is not None else f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
 
         # saved graph
         self.G = None
@@ -497,20 +496,26 @@ class ExecutionEnvironment(object):
         self.test_data = None
         # self.color_masks = None
 
+    def set_target_langs(self, target_langs):
+        self.target_langs = target_langs
+        self.all_langs = set(self.gt_langs | target_langs)
+        assert len(self.all_langs) == len(self.gt_langs) + len(target_langs)  # disjunct sets
+
     def load_graph(self):
         print(f'Loading graph from {self.graph_path}')
         with open(self.graph_path, 'rb') as f:
             gc.disable()  # disable garbage collection to speed up loading
             self.G, self.empty_questions_by_lang, self.num_removed_gt_qid_links = cPickle.load(f)
             gc.enable()
+        loaded_languages = set([self.G.nodes[node]['lang'] for node in self.G.nodes])
+        loaded_languages.remove('semantic_domain_question')
+        self.set_target_langs(loaded_languages - self.gt_langs)
         print('Done loading graph')
 
     def build_network(self):
-        if os.path.exists(self.graph_path):
-            self.load_graph()
-            return self.G
         self.G = nx.Graph()
         self.dc._load_state()
+        self.set_target_langs(set(self.dc.target_langs) - self.gt_langs)
 
         long_qid_name_by_qid = {}  # e.g., '1.1.1.1 1' -> 'qid: 1.1.1.1 1 Moon'
         # empty_questions = {
@@ -961,7 +966,7 @@ class ExecutionEnvironment(object):
             print(
                 f"Epoch: {epoch:03d}, Train Loss: {train_loss:.3f}, Val Loss: {val_loss:.3f}, Val Soft Precision: {val_soft_precision:.3f}, Val Soft Recall: {val_soft_recall:.3f}")
 
-            checkpoint_path = f"model_{wandb.run.name}_epoch{epoch}_val-loss{val_loss:.3f}_checkpoint.bin"
+            checkpoint_path = f"data/3_models/model_{wandb.run.name}_epoch{epoch}_val-loss{val_loss:.3f}_checkpoint.bin"
             if early_stopper.early_stop(val_loss, epoch, self.save_model, checkpoint_path):
                 print("Early stopping")
                 self.create_gif()  # outcomment for DNAConv
@@ -1037,6 +1042,7 @@ class ExecutionEnvironment(object):
         qids_by_sd_name = dict(sorted(qids_by_sd_name.items(), key=lambda x: x[0]))
 
         self.dc._load_state()
+        self.set_target_langs(set(self.dc.target_langs) - self.gt_langs)
         sds_df = self.dc.sds_by_lang[lang]
 
         # write to html file
@@ -1369,8 +1375,7 @@ class ExecutionEnvironment(object):
             plt.show()
 
         if 'weights' in plots:
-            self.model.visualize_weights('after/during training, ' + self.wandb_original_run_name, num_frame, eval_loss,
-                                         self.config['plot_path'])
+            self.model.visualize_weights(self.wandb_original_run_name, num_frame, eval_loss, self.config['plot_path'])
 
         if print_highest_qid_correlations:
             self.model.print_highest_qid_correlations(self.qid_node_names)
@@ -1384,17 +1389,21 @@ class ExecutionEnvironment(object):
     def convert_edge_index_to_set_of_tuples(edge_index):
         return {(u, v) for u, v in edge_index.transpose(0, 1).tolist()}
 
-    def save_model(self, path):
-        path = os.path.join(self.config['model_path'], path)
+    def save_model(self, path=None):
+        path = path if path is not None else self.model_path
         print(f'Saving model to {path}')
         torch.save(self.model.state_dict(), path)
 
     def update_original_run_name(self, model_path):
         # extract original name from path (e.g. 'model_fanciful-gorge-55_epoch417_val-loss0.917_checkpoint.bin' -> 'fanciful-gorge-55')
-        self.wandb_original_run_name = re.search(r'(?<=model_)(.*?)(?=[_\.])', os.path.basename(model_path)).group(1)
+        try:
+            self.wandb_original_run_name = re.search(r'(?<=model_)(.*?)(?=[_\.])', os.path.basename(model_path)).group(
+                1)
+        except AttributeError:
+            self.wandb_original_run_name = os.path.basename(model_path)
 
-    def load_model(self, path):
-        path = os.path.join(self.config['model_path'], path)
+    def load_model(self, path=None):
+        path = path if path is not None else self.model_path
         print(f'Loading model from {path}')
         self.update_original_run_name(path)
 
@@ -1757,7 +1766,7 @@ class ExecutionEnvironment(object):
         return precision_by_lang, recall_by_lang, f1_by_lang
 
     def test(self, print_human_readable_predictions=False, threshold=None,
-             compute_ideal_threshold=True, plots=None):
+             compute_ideal_threshold=True, plots=None, json_result_path=None):
         plots = [] if plots is None else plots
 
         print('\nValidation set performance:')
@@ -1799,6 +1808,16 @@ class ExecutionEnvironment(object):
             f.write(f'{wandb.run.name},{self.graph_path},')
             f.write(','.join([f'{precision_by_lang[idx][1]},{recall_by_lang[idx][1]},{f1_by_lang[idx][1]}' for idx in
                               range(len(self.gt_langs))]) + '\n')
+
+        # save the results to a json file
+        if json_result_path is not None:
+            print(f'Saving precision, recall, and F1 to {json_result_path}')
+            results = {}
+            for idx in range(len(self.gt_langs)):
+                results[precision_by_lang[idx][0]] = {'precision': precision_by_lang[idx][1],
+                                                      'recall': recall_by_lang[idx][1], 'f1': f1_by_lang[idx][1]}
+            with open(json_result_path, 'w') as f:
+                json.dump(results, f, indent=4)
 
         # if eval_train_set:
         #     print('\nTrain set performance:')
@@ -1876,36 +1895,37 @@ class ExecutionEnvironment(object):
     def save_dataset(self):
         # save the dataset with cPickle
         # Caution: This requires lots of storage! (~ 15GB)
-        path = f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
-        if os.path.exists(path):
-            print(f'File {path} already exists, skipping saving the dataset.')
+        if os.path.exists(self.dataset_path):
+            print(f'File {self.dataset_path} already exists, skipping saving the dataset.')
             return
 
-        print(f'Saving dataset to {path}')
-        with open(path, 'wb') as f:
+        print(f'Saving dataset to {self.dataset_path}')
+        with open(self.dataset_path, 'wb') as f:
             cPickle.dump((self.data, self.qid_node_idx_by_name, self.word_node_idx_by_name, self.qid_node_names,
                           self.word_node_names, self.word_node_idxs_by_lang, self.word_node_names_by_qid_name,
                           self.forbidden_neg_train_edges, self.train_data, self.val_data, self.test_data), f)
-        self.dataset_path = path
         print('Done saving dataset.')
 
     def load_dataset(self, path=None):
         # load the dataset with cPickle
-        path = path if path is not None else f'data/9_datasets/{self.wandb_original_run_name}.cpickle'
+        path = path if path is not None else self.dataset_path
         print(f'Loading dataset from {path}')
         with open(path, 'rb') as f:
             gc.disable()  # disable garbage collection to speed up loading
             self.data, self.qid_node_idx_by_name, self.word_node_idx_by_name, self.qid_node_names, self.word_node_names, \
                 self.word_node_idxs_by_lang, self.word_node_names_by_qid_name, self.forbidden_neg_train_edges, \
                 self.train_data, self.val_data, self.test_data = cPickle.load(f)
+            self.data.to(self.device)
             gc.enable()  # enable garbage collection again
         self.convert_empty_questions_by_lang_to_tensors()
         print('Done loading dataset.')
 
     def build_dataset(self, additional_target_lang=None):
+        # self.build_network()  # also contains languages without gt sds
+        self.load_graph()
         if additional_target_lang is not None:
             assert additional_target_lang in self.target_langs
-        self.build_network()  # also contains languages without gt sds
+
         subgraph = self.G.subgraph([n for n in self.G.nodes if
                                     self.G.nodes[n]['lang'] in self.gt_langs.union(
                                         {'semantic_domain_question',
@@ -1938,8 +1958,8 @@ class ExecutionEnvironment(object):
             lang
             in set(lang_by_word_node_idx.values())}
         num_words_by_lang = {lang: len(self.word_node_idxs_by_lang[lang]) for lang in self.word_node_idxs_by_lang}
-        print(num_words_by_lang)
-        print(sum(num_words_by_lang.values()))
+        print('Number of words by language:' + str(num_words_by_lang))
+        print('Total number of words: ' + str(sum(num_words_by_lang.values())))
 
         self.convert_empty_questions_by_lang_to_tensors()
 
@@ -2049,8 +2069,8 @@ class ExecutionEnvironment(object):
         # self.partition_graph()
         self.save_dataset()
 
-    def evaluate_model(self, model_path, dataset_path):
-        print('Making predictions...')
+    def evaluate_model(self, model_path, dataset_path, json_result_path):
+        print(f'Evaluating {model_path}')
 
         path_1 = model_path
         self.update_original_run_name(path_1)
@@ -2064,8 +2084,8 @@ class ExecutionEnvironment(object):
 
         self.load_model(path_1)
 
-        threshold = 0.999  # 1.0
-        self.test(threshold=threshold, compute_ideal_threshold=False)
+        threshold = 0.999
+        self.test(threshold=threshold, compute_ideal_threshold=False, json_result_path=json_result_path)
         # self.evaluate(plots=['explain false positives'], threshold=threshold,
         #               compute_ideal_threshold=False)
 
@@ -2075,7 +2095,7 @@ class ExecutionEnvironment(object):
         #     path_2 = path_1[
         #              :-4] + f"_precision{test_precision:.2f}_F1{test_f1:.2f}_th{ideal_threshold:.2f}_{'+'.join(self.dc.target_langs)}.bin"
         #     self.save_model(path_2)
-        #     os.remove(os.path.join(self.config['model_path'], path_1))
+        #     os.remove(os.path.join('data/3_models/', path_1))
         #     return path_2
         # return path_1
 
@@ -2096,16 +2116,13 @@ class ExecutionEnvironment(object):
 
         self.train_link_predictor()
 
-        path_1 = f"model_{wandb.run.name}.bin"
-        self.save_model(path_1)
-        return path_1, self.dataset_path
+        # path_1 = f"model_{wandb.run.name}.bin"
+        self.save_model()
 
 
-def setup(mag_path):
-    project_name = "GCN node prediction (link semantic domains to target words), 20 langs dataset"
-    wandb.init(
-        project=project_name,
-        config={
+def setup(mag_path, output_model_file=None, output_data_split_file=None, state_files_path='data/0_state',
+          use_wandb=True):
+    config = {
             "batch_size": 6000,  # 5000 : DNAConv # 6000 : GCNConv   # 10000 # higher batch size --> higher recall
             "epochs": 1000,
 
@@ -2118,22 +2135,22 @@ def setup(mag_path):
             "optimizer": "adam",
             "learning_rate": 0.05,  # 0.005,
             "weight_decay": 0.0,  # 0.005,
-            "model_path": "data/3_models/",
             "plot_path": "data/8_plots/",
-        })
+    }
+    if use_wandb:
+        wandb.init(
+            project="GCN node prediction (link semantic domains to target words), 20 langs dataset",
+            config=config)
 
-    dc = LinkPredictionDictionaryCreator(
-        ['bid-eng-web', 'bid-fra-sbl', 'bid-ind', 'bid-por-bsl', 'bid-swh-ulb', 'bid-spa-blm',
-         'bid-hin', 'bid-mal', 'bid-npi', 'bid-mkn', 'bid-ben', 'bid-cmn-s', 'bid-pes', 'bid-urd',
-         'bid-deu-1951', 'bid-azb', 'bid-ibo', 'bid-gej', 'bid-yor', 'bid-tpi', 'bid-meu', 'bid-hmo'])
-
+    dc = LinkPredictionDictionaryCreator(['bid-eng-web'], state_files_path=state_files_path)
     execution_env = ExecutionEnvironment(dc,
                                          gt_langs={'eng', 'fra', 'ind', 'por', 'swh', 'spa', 'hin', 'mal', 'npi', 'ben',
                                                    'mkn', 'cmn'},
-                                         target_langs={'deu', 'azb', 'ibo', 'gej', 'yor', 'tpi', 'meu', 'hmo'},
-                                         config=wandb.config,
+                                         config=config,
                                          # graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_90_12_langs_no-stopword-removal_{suffix}.cpickle')
-                                         graph_path=mag_path)
+                                         graph_path=mag_path,
+                                         model_path=output_model_file,
+                                         dataset_path=output_data_split_file)
 
     # print the torch seed for reproducibility
     print(f'Torch seed: {torch.initial_seed()}')
@@ -2141,14 +2158,16 @@ def setup(mag_path):
     return execution_env
 
 
-def train(mag_path):
-    execution_env = setup(mag_path)
-    execution_env.num_removed_gt_qid_links = 218890
-    model_path, data_split_path = execution_env.run_gnn_pipeline()
-    print(f'Done. Saved model at {model_path} and data split at {data_split_path}.')
-    # execution_env.make_predictions(model_path)
+def refine_mag(input_mag_path, output_mag_file):
+    execution_env = setup(output_mag_file, state_files_path=input_mag_path, use_wandb=False)
+    execution_env.build_network()
 
 
-def eval(model_file, mag_path, data_split_path):
-    execution_env = setup(mag_path)
-    execution_env.evaluate_model(model_file, data_split_path)
+def train(mag_path, output_model_file, output_data_split_file):
+    execution_env = setup(mag_path, output_model_file, output_data_split_file)
+    execution_env.run_gnn_pipeline()
+
+
+def evaluate(mag_path, model_file, data_split_file, results_output_file):
+    execution_env = setup(mag_path, model_file, data_split_file)
+    execution_env.evaluate_model(model_file, data_split_file, results_output_file)

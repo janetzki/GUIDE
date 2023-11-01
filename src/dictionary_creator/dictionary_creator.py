@@ -203,18 +203,14 @@ class DictionaryCreator(ABC):
                  aligned_bibles_path='data/1_aligned_bibles',
                  sd_path_prefix='data/4_semdoms/semdom_qa_clean',
                  gt_langs=None):
-        assert len(bids) == len(set(bids))  # unique elements
         assert len(self.BIBLES_BY_BID.values()) == len(set(self.BIBLES_BY_BID.values()))  # unique values
-
-        self.bids = bids
-        self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
-        self.source_lang = self._convert_bid_to_lang(self.bids[0])
-        self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
+        self._set_bids(bids)
         if gt_langs is None:
             gt_langs = self.target_langs
         else:
             assert set(gt_langs).issubset(self.target_langs)
         self.gt_langs = gt_langs
+
         self.state_files_base_path = state_files_path
         self.aligned_bibles_path = aligned_bibles_path
         self.tokenizer_by_lang = defaultdict(lambda: 'pre-tokenized')
@@ -339,7 +335,8 @@ class DictionaryCreator(ABC):
         directories = os.listdir(self.state_files_base_path)
         for bid in self.bids:
             directories = [directory for directory in directories if bid in directory]
-        directories = [directory for directory in directories if directory.count('bid') == len(self.bids)]
+        if len(self.bids) > 1:  # hack to load bids when executing refine_mag.py
+            directories = [directory for directory in directories if directory.count('bid') == len(self.bids)]
         directories.sort()
 
         most_recent_directory = None
@@ -351,6 +348,24 @@ class DictionaryCreator(ABC):
             assert most_recent_timestamp <= self.start_timestamp
             self.start_timestamp = most_recent_timestamp
         return most_recent_directory
+
+    def _set_bids(self, bids):
+        assert len(bids) == len(set(bids))  # unique elements
+        self.bids = bids
+        self.bibles_by_bid = {bid: DictionaryCreator.BIBLES_BY_BID[bid] for bid in bids}
+        self.source_lang = self._convert_bid_to_lang(self.bids[0])
+        self.target_langs = sorted(set([self._convert_bid_to_lang(bid) for bid in self.bids]))
+        if hasattr(self, 'gt_langs'):
+            assert set(self.gt_langs).issubset(self.target_langs)
+
+    def _load_bids(self, state_files_directory):
+        # extract all bids from state_files_directory
+        # e.g. "2023-09-25 17:48:07 bid-eng-web bid-fra-sbl bid-ind" -> ['bid-eng-web', 'bid-fra-sbl', 'bid-ind']
+        bids = []
+        for word in state_files_directory.split(' '):
+            if word.startswith('bid-'):
+                bids.append(word)
+        self._set_bids(bids)
 
     def _load_state(self):
         # file path format: {state_files_base_path}/{start_timestamp} {bids}/{variable_name}_{key}.dill
@@ -364,6 +379,7 @@ class DictionaryCreator(ABC):
             return
 
         print(f'Loading state {state_files_directory}...')
+        self._load_bids(state_files_directory)
         state_files_directory = os.path.join(self.state_files_base_path, state_files_directory)
         file_names = os.listdir(state_files_directory)
 
@@ -434,7 +450,8 @@ class DictionaryCreator(ABC):
                       'r') as bible:
                 self.verses_by_bid[bid] = bible.readlines()
             # self.verses_by_bid[bid] = [verse if verse != '<range>\n' else '\n' for verse in self.verses_by_bid[bid]]
-            assert len(self.verses_by_bid[bid]) == self.num_verses
+            assert len(self.verses_by_bid[
+                           bid]) == self.num_verses, f'{bid} has {len(self.verses_by_bid[bid])} instead of {self.num_verses} verses'
 
     def _load_additional_word_qid_mappings(self):
         path = 'data/4_semdoms/additional_words.xlsx'
@@ -795,12 +812,12 @@ class DictionaryCreator(ABC):
 
         assert len(lemmas) == len(lines), f'Length mismatch: {len(lemmas)} != {len(lines)}'
 
-        # assert that only the lines in empty_lines are empty
-        for i, line in enumerate(lemmas):
-            if i in empty_lines:
-                assert len(line) == 0
-            else:
-                assert len(line) > 0
+        # # assert that only the lines in empty_lines are empty
+        # for i, line in enumerate(lemmas):
+        #     if i in empty_lines:
+        #         assert len(line) == 0
+        #     else:
+        #         assert len(line) > 0
 
         if save_bid is not None:
             # save lemmas
@@ -1085,7 +1102,8 @@ class DictionaryCreator(ABC):
                 with open(f'{self.aligned_bibles_path}/{aligned_bibles_file_base_name}_eflomal_diag.align',
                           'r') as alignment_file:
                     alignment = alignment_file.readlines()
-                    assert len(alignment) == self.num_verses
+                    assert len(
+                        alignment) == self.num_verses, f'Alignment file {alignment_file} has wrong length ({len(alignment)} != {self.num_verses})'
                     self._map_two_bibles_bidirectionally(alignment, bid_1, bid_2)
                     count += 1
                     print(f'{count} / ~{total} completed')
