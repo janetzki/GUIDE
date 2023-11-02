@@ -459,9 +459,9 @@ class EarlyStopper:
 
 
 class ExecutionEnvironment(object):
-    def __init__(self, dc, gt_langs, config, graph_path, model_path=None, dataset_path=None):
+    def __init__(self, dc, gt_langs, config, graph_path, wandb_original_run_name, model_path=None, dataset_path=None):
         self.dc = dc
-        self.wandb_original_run_name = wandb.run.name
+        self.wandb_original_run_name = wandb_original_run_name
 
         self.gt_langs = gt_langs
         self.target_langs = None
@@ -2152,7 +2152,8 @@ def setup(mag_path, output_model_file=None, output_data_split_file=None, state_f
                                          # graph_path=f'data/7_graphs/graph-nep_min_alignment_count_{wandb.config["min_alignment_count"]}_min_edge_weight_{wandb.config["min_edge_weight"]}_90_12_langs_no-stopword-removal_{suffix}.cpickle')
                                          graph_path=mag_path,
                                          model_path=output_model_file,
-                                         dataset_path=output_data_split_file)
+                                         dataset_path=output_data_split_file,
+                                         wandb_original_run_name=wandb.run.name if use_wandb else 'no-wandb-run')
 
     # print the torch seed for reproducibility
     print(f'Torch seed: {torch.initial_seed()}')

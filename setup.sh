@@ -42,7 +42,7 @@ curl https://raw.githubusercontent.com/BibleNLP/ebible/main/corpus/yor-yor.txt >
 conda create --name myenv python=3.11
 eval "$(conda shell.bash hook)"
 conda activate myenv
-conda env update -y -n myenv -f environment.yml
+conda env update -n myenv -f environment.yml
 yes | pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.0.0+cpu.html
 
 # Add the submodules

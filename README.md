@@ -107,7 +107,7 @@ we propose the first automated approach to address this task.
 
 ## Contributing
 
-If you would like to contribute or have any suggestions for this project, you can contact me
+If you would like to contribute, find bugs, or have any suggestions for this project, you can contact me
 at [jonathan.janetzki@student.hpi.de](mailto:jonathan.janetzki@student.hpi.de) or open an issue on this GitHub
 repository.
 
