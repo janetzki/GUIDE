@@ -437,7 +437,6 @@ class DictionaryCreator(ABC):
             if os.path.isfile(sd_path):
                 self.sds_by_lang[lang] = pd.read_csv(sd_path)
             else:
-                print(f'WARNING: Unable to load {sd_path}')
                 # create empty dataframe
                 self.sds_by_lang[lang] = pd.DataFrame(
                     {'cid': [], 'category': [], 'question_index': [], 'question': [], 'answer': []})

@@ -5,13 +5,15 @@ This repository is the official implementation of my master's thesis.
 ![image](results/new_dictionary_entries_eng.png)
 ![image](results/new_dictionary_entries_gej.png)
 
-Existing (black) semantic domain dictionary entries in [FLEx](https://software.sil.org/fieldworks/flex) and newly
-predicted (green) ones: The upper image shows three entries that GUIDE added to the English dictionary and the lower
+Existing (black) semantic domain dictionary entries in [FLEx](https://software.sil.org/fieldworks/flex) and correct (
+green) and incorrect (red)
+new predictions: The upper image shows three entries that GUIDE added to the English dictionary and the lower
 image shows seven entries for the same semantic domain question in the newly created Mina-Gen dictionary.
 
 
 ## Requirements
 
+You need the [Conda](https://docs.conda.io/en/latest/) package manager to install the requirements.
 To install the requirements:
 
 ```setup
@@ -20,7 +22,8 @@ chmod +x setup.sh
 ```
 
 Download the Multilingual Alignment Graph (MAG)
-from [here](https://drive.google.com/file/d/1XITKTJ2YIII89kNQPtxFr9TwvIX9IyPW/view?usp=sharing).
+from [here](https://drive.google.com/file/d/1XITKTJ2YIII89kNQPtxFr9TwvIX9IyPW/view?usp=sharing) and put it into the main
+folder.
 
 ## Preprocessing Pipeline
 
@@ -29,11 +32,11 @@ If you want to reproduce the preprocessing, run:
 
 ```preprocess
 conda activate myenv
-python -m src.preprocess --output-directory data/0_state/
-python -m src.gnn.refine_mag --input-mag-directory data/0_state/ --output-mag-file final_mag.cpickle
+python -m src.preprocess --output-directory data/0_state/ && python -m src.gnn.refine_mag --input-mag-directory data/0_state/ --output-mag-file final_mag.cpickle
 ```
 
-Note that this does not include the Igbo and Gen-Mina languages because the source Bible translations are copyrighted.
+Note that the preprocessing does not include the Igbo and Gen-Mina languages because the source Bible translations are
+copyrighted.
 
 ## Training
 

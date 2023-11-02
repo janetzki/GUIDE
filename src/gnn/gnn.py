@@ -2009,12 +2009,14 @@ class ExecutionEnvironment(object):
         # Create the node degree feature
         degree_feature = torch.zeros(len(self.word_node_names), 1)
         for node in self.word_node_names:
-            degree_feature[self.word_node_idx_by_name[node]] = self.G.degree(node)
+            degree_feature[self.word_node_idx_by_name[node]] = self.G.degree(
+                node)  # todo: subtract links to semantic domain questions
 
         # Create the weighted node degree feature
         weighted_degree_feature = torch.zeros(len(self.word_node_names), 1)
         for node in self.word_node_names:
-            weighted_degree_feature[self.word_node_idx_by_name[node]] = self.G.degree(node, weight='weight')
+            weighted_degree_feature[self.word_node_idx_by_name[node]] = self.G.degree(node,
+                                                                                      weight='weight')  # todo: subtract links to semantic domain questions
 
         # Create QID feature
         indices = []
