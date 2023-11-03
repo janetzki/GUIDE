@@ -41,10 +41,10 @@ curl https://raw.githubusercontent.com/BibleNLP/ebible/main/corpus/tpi-tpi.txt >
 curl https://raw.githubusercontent.com/BibleNLP/ebible/main/corpus/yor-yor.txt >"data/5_raw_bibles/eBible/no semdoms available/yor-yor.txt"
 
 # Create the conda environment
-conda create --name guide_env python=3.11
+conda create --name guide_env python=3.11 --yes
 eval "$(conda shell.bash hook)"
 conda activate guide_env
-y | conda env update -n guide_env -f environment.yml
+conda env update -n guide_env -f environment.yml
 yes | pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.0.0+cpu.html
 
 # Add the submodules
