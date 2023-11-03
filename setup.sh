@@ -1,18 +1,20 @@
+#!/bin/sh -e
+
 # Create the folder structure
-mkdir data
-mkdir data/0_state
-mkdir data/1_aligned_bibles
-mkdir data/2_sd_labeling
-mkdir data/3_models
-mkdir data/4_semdoms
-mkdir data/5_raw_bibles
-mkdir data/5_raw_bibles/eBible
-mkdir "data/5_raw_bibles/eBible/no semdoms available"
-mkdir data/6_results
-mkdir data/7_graphs
-mkdir data/8_plots
-mkdir data/9_datasets
-mkdir data/10_lemmatized_bibles
+mkdir data || true
+mkdir data/0_state || true
+mkdir data/1_aligned_bibles || true
+mkdir data/2_sd_labeling || true
+mkdir data/3_models || true
+mkdir data/4_semdoms || true
+mkdir data/5_raw_bibles || true
+mkdir data/5_raw_bibles/eBible || true
+mkdir "data/5_raw_bibles/eBible/no semdoms available" || true
+mkdir data/6_results || true
+mkdir data/7_graphs || true
+mkdir data/8_plots || true
+mkdir data/9_datasets || true
+mkdir data/10_lemmatized_bibles || true
 
 # Download git LFS files
 git lfs install
@@ -39,10 +41,10 @@ curl https://raw.githubusercontent.com/BibleNLP/ebible/main/corpus/tpi-tpi.txt >
 curl https://raw.githubusercontent.com/BibleNLP/ebible/main/corpus/yor-yor.txt >"data/5_raw_bibles/eBible/no semdoms available/yor-yor.txt"
 
 # Create the conda environment
-conda create --name myenv python=3.11
+conda create --name guide_env python=3.11
 eval "$(conda shell.bash hook)"
-conda activate myenv
-conda env update -n myenv -f environment.yml
+conda activate guide_env
+y | conda env update -n guide_env -f environment.yml
 yes | pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.0.0+cpu.html
 
 # Add the submodules
@@ -51,7 +53,7 @@ git submodule add https://github.com/robertostling/eflomal.git eflomal/
 git submodule update --init --recursive
 
 # Install fast_align
-mkdir fast_align/build
+mkdir fast_align/build || true
 cd fast_align/build || exit
 cmake ..
 make

@@ -14,6 +14,9 @@ image shows seven entries for the same semantic domain question in the newly cre
 ## Requirements
 
 You need the [Conda](https://docs.conda.io/en/latest/) package manager to install the requirements.
+Furthermore, you
+need [Git LFS](https://docs.github.com/en/repositories/working-with-files/managing-large-files/installing-git-large-file-storage)
+to setup the repository.
 To install the requirements:
 
 ```setup
