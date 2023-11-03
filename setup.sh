@@ -1,4 +1,11 @@
-#!/bin/sh -e
+#!/bin/sh -ex
+
+# Initialize the git repository (in case it has been downloaded as a zip file)
+git init
+git add .
+git remote add origin https://github.com/janetzki/GUIDE.git || true
+git remote update
+git checkout main --force
 
 # Create the folder structure
 mkdir data || true

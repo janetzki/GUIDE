@@ -34,7 +34,7 @@ You can skip the preprocessing and directly start to train the model by using th
 If you want to reproduce the preprocessing, run:
 
 ```preprocess
-conda activate myenv
+conda activate guide_env
 python -m src.preprocess --output-directory data/0_state/ && python -m src.gnn.refine_mag --input-mag-directory data/0_state/ --output-mag-file final_mag.cpickle
 ```
 
@@ -46,7 +46,7 @@ copyrighted.
 To train GUIDE, run this command:
 
 ```train
-conda activate myenv
+conda activate guide_env
 CUDA_VISIBLE_DEVICES=0 python -m src.gnn.train --input-mag-file final_mag.cpickle --output-model-file my_trained_model.bin --output-data-split-file my_data_split.bin
 ```
 
@@ -55,7 +55,7 @@ CUDA_VISIBLE_DEVICES=0 python -m src.gnn.train --input-mag-file final_mag.cpickl
 To evaluate GUIDE, run:
 
 ```eval
-conda activate myenv
+conda activate guide_env
 CUDA_VISIBLE_DEVICES=0 python -m src.gnn.eval --input-mag-file final_mag.cpickle --input-model-file my_trained_model.bin --input-data-split-file my_data_split.bin --output-results-file my_results.json
 ```
 
