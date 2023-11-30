@@ -3,9 +3,10 @@
 __pycache__/
 data/
 visualizations/
-event_log.txt
-dictionary/creator/src/gnn/wandb/
-awesome_align/
+awesome-align/
 my_utils/
-eflomal/
-fast_align/
+gnn_utils/
+plots/
+venv3/
+wandb/
+src/local_code/
