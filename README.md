@@ -24,13 +24,10 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-Download the Multilingual Alignment Graph (MAG)
-from [here](https://drive.google.com/file/d/1XITKTJ2YIII89kNQPtxFr9TwvIX9IyPW/view?usp=sharing) and put it into the main
-folder.
-
 ## Preprocessing Pipeline
 
 You can skip the preprocessing and directly start to train the model by using the prepared file `final_mag.cpickle`.
+(MAG stands for "Multilingual Alignment Graph".)
 If you want to reproduce the preprocessing, run:
 
 ```preprocess
