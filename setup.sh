@@ -1,5 +1,13 @@
 #!/bin/sh -ex
 
+# Check if Conda is installed
+if command -v conda &> /dev/null; then
+    echo "Conda is installed."
+else
+    echo "Conda is not installed. Please install Conda before proceeding."
+    exit 1
+fi
+
 # Initialize the git repository (in case it has been downloaded as a zip file)
 git init
 git add .
@@ -69,3 +77,6 @@ cd ../..
 # Install Eflomal
 yes | pip install eflomal
 yes | python -m pip install eflomal/
+
+# Print success message
+echo "Setup completed successfully!"
