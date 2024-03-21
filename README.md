@@ -24,6 +24,9 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
+This setup has been tested on an ASUS
+ESC8000 G4 with Ubuntu 22.04.
+
 ## Preprocessing Pipeline
 
 You can skip the preprocessing and directly start to train the model by using the prepared file `final_mag.cpickle`.

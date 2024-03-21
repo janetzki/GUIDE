@@ -1,6 +1,6 @@
-import math
 from collections import defaultdict
 
+import math
 import networkx as nx
 import seaborn as sns
 from matplotlib import pyplot as plt
@@ -9,7 +9,7 @@ from nltk.metrics.distance import edit_distance
 from tqdm import tqdm
 
 from src.dictionary_creator.dictionary_creator import DictionaryCreator
-from src.semantic_domain_identifier import convert_verse_id_to_bible_reference
+from src.utils import convert_verse_id_to_bible_reference
 
 
 class LinkPredictionDictionaryCreator(DictionaryCreator):
