@@ -1,4 +1,4 @@
-[![GitHub Issues](https://img.shields.io/github/issues/flairNLP/flair.svg)](https://github.com/janetzki/GUIDE/issues)
+[![GitHub Issues](https://img.shields.io/github/issues/janetzki/GUIDE.svg)](https://github.com/janetzki/GUIDE/issues)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
@@ -8,12 +8,14 @@ Code
 for [GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages](https://aclanthology.org/2024.sigtyp-1.2.pdf)
 accepted at the SIGTYP 2024 workshop.
 
+## Our presentation
 <div align="center">
 
-[![Watch our presentation](https://lh3.googleusercontent.com/u/0/drive-viewer/AKGpihZ2_rMfB0ssG910V1hiqsVb_FAWHMq2D36ksQx-Hjm7hxZy3iJZ-zK_BSmGM0LpKsCe51EvWAwlqnkZtCWfqzuGMS5grA=w1920-h932)](https://youtu.be/iENx7nyr5cs)
-
+[![Watch it](https://lh3.googleusercontent.com/u/0/drive-viewer/AKGpihZ2_rMfB0ssG910V1hiqsVb_FAWHMq2D36ksQx-Hjm7hxZy3iJZ-zK_BSmGM0LpKsCe51EvWAwlqnkZtCWfqzuGMS5grA=w1920-h932)](https://youtu.be/iENx7nyr5cs)
+(Click to open the YouTube video) (11:26 min)
 </div>
 
+## Overview
 ![image](results/new_dictionary_entries_eng.png)
 ![image](results/new_dictionary_entries_gej.png)
 
