@@ -1,6 +1,18 @@
+[![GitHub Issues](https://img.shields.io/github/issues/flairNLP/flair.svg)](https://github.com/janetzki/GUIDE/issues)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
+
 # GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages
 
-This repository is the official implementation of my master's thesis.
+Code
+for [GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages](https://aclanthology.org/2024.sigtyp-1.2.pdf)
+accepted at the SIGTYP 2024 workshop.
+
+<div align="center">
+
+[![Watch our presentation](https://lh3.googleusercontent.com/u/0/drive-viewer/AKGpihZ2_rMfB0ssG910V1hiqsVb_FAWHMq2D36ksQx-Hjm7hxZy3iJZ-zK_BSmGM0LpKsCe51EvWAwlqnkZtCWfqzuGMS5grA=w1920-h932)](https://youtu.be/iENx7nyr5cs)
+
+</div>
 
 ![image](results/new_dictionary_entries_eng.png)
 ![image](results/new_dictionary_entries_gej.png)
