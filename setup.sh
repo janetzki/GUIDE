@@ -60,7 +60,7 @@ conda create --name guide_env python=3.11 --yes
 eval "$(conda shell.bash hook)"
 conda activate guide_env
 conda env update -n guide_env -f environment.yml
-yes | pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.0.0+cpu.html
+yes | pip install pyg_lib==0.2.0+pt20cpu torch_sparse==0.6.17+pt20cpu -f https://data.pyg.org/whl/torch-2.0.0+cpu.html
 
 # Add the submodules
 git submodule add https://github.com/clab/fast_align.git fast_align/
