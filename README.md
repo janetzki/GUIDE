@@ -1,17 +1,17 @@
+# GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages
+
 [![GitHub Issues](https://img.shields.io/github/issues/janetzki/GUIDE.svg)](https://github.com/janetzki/GUIDE/issues)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
-# GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages
-
 Code
-for [GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages](https://aclanthology.org/2024.sigtyp-1.2.pdf)
-accepted at the SIGTYP 2024 workshop.
+for [GUIDE: Creating Semantic Domain Dictionaries for Low-Resource Languages](https://aclanthology.org/2024.sigtyp-1.2/),
+published at SIGTYP 2024.
 
 ## Our presentation
 <div align="center">
 
-[![Watch it](https://lh3.googleusercontent.com/u/0/drive-viewer/AKGpihZ2_rMfB0ssG910V1hiqsVb_FAWHMq2D36ksQx-Hjm7hxZy3iJZ-zK_BSmGM0LpKsCe51EvWAwlqnkZtCWfqzuGMS5grA=w1920-h932)](https://youtu.be/iENx7nyr5cs)
+[![Watch it](https://lh3.googleusercontent.com/u/0/drive-viewer/AKGpihZrt1crbZuRoNrXwW61oui9rsQLKysQYyph1n2Mk9hBoVmshx7VoHuB6Ok_Z4R_aUMvbJ6EAm17OOzF7a8Va4ulf39chA=w1920-h932)](https://youtu.be/iENx7nyr5cs)
 (Click to open the YouTube video) (11:26 min)
 </div>
 
@@ -38,7 +38,7 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-This setup has been tested on an ASUS
+This setup has been tested on an ASUS machine
 ESC8000 G4 with Ubuntu 22.04.
 
 ## Preprocessing Pipeline
